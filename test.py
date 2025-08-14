@@ -1,37 +1,267 @@
-import requests
 import os
 import sys
 from datetime import datetime
 import pandas_datareader.data as web
 from openai import OpenAI
+from urllib.parse import quote
+from playwright.sync_api import sync_playwright
+import chromadb
+from chromadb.config import Settings
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 
-DEBUG = False
+DEBUG = True
 MAX_ITERATIONS = 2
 
 # 设置 API 密钥
 api_key = os.getenv("DASHSCOPE_API_KEY")
-search_api_key = "f97a60574d1ce7566fcf06b15c8b07bf9eeebf21d94e9b2480bc96acccadf95b"
 
-# 映射常用指标到 pandas_datareader/FRED 支持的代码（这里是示例，真实使用时你可以替换为中国宏观数据接口）
+# 初始化嵌入模型（用于将文本转为向量）
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')  # 轻量级模型，适合本地使用
+# 初始化Chroma向量数据库（存储在本地目录）
+db_client = chromadb.Client(
+    Settings(
+        persist_directory="./local_search_db",  # 本地存储路径
+        anonymized_telemetry=False  # 关闭匿名统计
+    )
+)
+# 创建/获取集合（类似数据库表）
+collection = db_client.get_or_create_collection(
+    name="housing_search_results",
+    metadata={"description": "存储房价相关搜索的查询和结果"}
+)
+
+# 映射常用指标到 pandas_datareader/FRED 支持的代码
 indicator_mapping = {
     "GDP": "CHNGDPRQDSMEI",
     "CPI": "CHNCPIALLMINMEI",
     "失业率": "CHNURTOTQDSMEI",
     "M2": "CHNM2",
     "贷款利率": "CHNIRLTLT01STM",
-    "LPR": "CHNLPR",  # 示例代码，实际可能需要接其他数据源
+    "LPR": "CHNLPR",
 }
 
 
-def search_web(query):
-    url = (f"https://serpapi.com/search.json?engine=baidu&q={query}&api_key="
-           f"{search_api_key}&hl=zh-CN&gl=cn")
+def local_search(query, threshold=0.7):
+    """
+    从本地向量库检索相似内容
+    :param query: 新查询词
+    :param threshold: 相似度阈值（超过此值认为相关）
+    :return: 相关结果文本列表及元数据（空列表表示无匹配）
+    """
+    # 生成查询向量
+    query_embedding = embedding_model.encode([query])[0].tolist()
+
+    # 检索相似结果（返回前3条最相似的）
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=3,
+        include=["documents", "metadatas", "distances"]
+    )
+
+    # 过滤出相似度高于阈值的结果（距离越小越相似，此处转换为相似度）
+    matched_results = []
+    for doc, metadata, distance in zip(
+            results["documents"][0],
+            results["metadatas"][0],
+            results["distances"][0]
+    ):
+        similarity = 1 - distance  # Chroma返回的是距离，转为相似度
+        if similarity > threshold:
+            matched_results.append({
+                "document": doc,
+                "metadata": metadata,
+                "similarity": similarity
+            })
+
+    return matched_results
+
+
+def store_to_local(query, search_result, duplicate_threshold=0.9):
+    """
+    存储新的搜索结果到本地向量库，避免重复
+    :param query: 搜索查询词
+    :param search_result: 网络搜索返回的结果文本
+    :param duplicate_threshold: 去重阈值（超过此值认为重复）
+    """
+    # 生成结果文本的向量
+    result_embedding = embedding_model.encode([search_result])[0].tolist()
+
+    # 检查是否与已有结果重复（检索最相似的已有结果）
+    existing = collection.query(
+        query_embeddings=[result_embedding],
+        n_results=1,
+        include=["distances"]
+    )
+
+    # 若最相似结果的相似度低于阈值，则存储新结果
+    if not existing["distances"][0] or (
+            1 - existing["distances"][0][0]) < duplicate_threshold:
+        collection.add(
+            documents=[search_result],  # 存储搜索结果文本
+            metadatas=[
+                {"query": query, "timestamp": datetime.now().isoformat()}],
+            # 附加元数据（查询词、时间）
+            embeddings=[result_embedding],  # 存储向量
+            ids=[f"id_{datetime.now().timestamp()}"]  # 唯一ID（用时间戳避免重复）
+        )
+        if DEBUG:
+            print("已存储新结果到本地向量库")
+    else:
+        if DEBUG:
+            print("结果与本地已有内容重复，未存储")
+
+
+def retrieve_info(url, browser):
+    """在新标签页打开链接并获取信息"""
     try:
-        response = requests.get(url)
-        results = response.json().get("organic_results", [])
-        return "\n".join([res.get("snippet", "") for res in results[:5]])
+        # 打开新标签页
+        page = browser.new_page(
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                       'AppleWebKit/537.36 (KHTML, like Gecko) '
+                       'Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0'
+        )
+
+        # 导航到目标页面，设置超时时间
+        page.goto(url, timeout=20000)
+        page.wait_for_selector('div.txtinfos', timeout=5000)
+        paragraphs = page.locator('div.txtinfos p')
+        text = []
+        for i in range(paragraphs.count()):
+            text.append(paragraphs.nth(i).text_content().strip())
+
+        # 获取页面标题
+        title = page.title()
+
+        # 关闭当前标签页
+        page.close()
+        return {
+            "title": title,
+            "url": url,
+            "content": ''.join(text)
+        }
     except Exception as e:
-        return f"搜索出错: {str(e)}"
+        return {
+            "title": "获取失败",
+            "url": url,
+            "content": f"获取详情失败: {str(e)}"
+        }
+
+
+def filter_similar_results(results, threshold=0.8):
+    """
+    过滤相似结果（基于标题向量相似度）
+    :param results: 结构化结果列表（含title、url、content）
+    :param threshold: 相似度阈值（超过此值视为相似）
+    :return: 去重后的结果列表
+    """
+    if len(results) <= 1:
+        return results  # 只有1条结果时无需过滤
+
+    # 对标题进行向量编码（标题更能反映核心内容，效率更高）
+    titles = [r["title"] for r in results]
+    title_embeddings = embedding_model.encode(titles)  # 形状：[n, 384]
+
+    # 计算相似度矩阵（n x n）
+    similarity_matrix = cosine_similarity(title_embeddings)
+
+    # 标记需要保留的结果（默认保留第一条，过滤后续相似结果）
+    keep = [True] * len(results)
+    for i in range(len(results)):
+        if not keep[i]:
+            continue  # 已被标记为丢弃，跳过
+        # 比较i与后续所有结果的相似度
+        for j in range(i + 1, len(results)):
+            if similarity_matrix[i][j] > threshold:
+                keep[j] = False  # 标记为丢弃
+                if DEBUG:
+                    print(
+                        f"过滤相似结果：{results[j]['title']}（与{results[i]['title']}相似度：{similarity_matrix[i][j]:.2f}）")
+
+    # 保留未被标记的结果
+    filtered = [results[i] for i in range(len(results)) if keep[i]]
+    return filtered
+
+def search_web(query, browser, search_page):
+    """使用现有浏览器和搜索页面进行搜索"""
+    # 构造东方财富网搜索URL
+    encoded_query = quote(query)
+    url = f"https://so.eastmoney.com/news/s?keyword={encoded_query}"
+    try:
+        # 直接修改URL进行搜索
+        search_page.goto(url, timeout=10000)
+        # 等待搜索结果加载
+        search_page.wait_for_selector('div.news_list', timeout=5000)
+        # 获取新闻列表
+        results = []
+        news_items = search_page.locator('div.news_list div.news_item')
+
+        # 遍历前5条结果
+        for i in range(min(news_items.count(), 10)):
+            # 获取新闻链接和标题
+            a_element = news_items.nth(i).locator('div.news_item_url a')
+            news_url = a_element.get_attribute('href')
+            news_title = a_element.text_content().strip() if a_element.text_content() else "无标题"
+
+            if news_url:
+                # 在新标签页打开并获取信息
+                detail = retrieve_info(news_url, browser)
+                results.append(detail)
+        filtered_results = filter_similar_results(results, threshold=0.8)
+
+        if DEBUG:
+            print("\n===== 过滤后网络搜索结果 =====")
+            for i, res in enumerate(filtered_results, 1):
+                print(f"结果 {i}：{res['title']}（{res['url']}）")
+
+        return filtered_results
+
+    except Exception as e:
+        return [{"title": "搜索出错", "url": url,
+                 "content": f"东方财富网搜索出错: {str(e)}"}]
+
+
+def search_with_local_priority(query, browser, search_page):
+    """优先从本地检索，同时执行网络搜索以获取新内容，合并结果"""
+    # 1. 先查本地
+    local_results = local_search(query)
+
+    # DEBUG模式下打印本地结果信息
+    if DEBUG and local_results:
+        print("\n===== 本地向量库搜索结果 =====")
+        for i, result in enumerate(local_results, 1):
+            query_text = result["metadata"].get("query", "未知查询")
+            timestamp = result["metadata"].get("timestamp", "未知时间")
+            print(f"本地结果 {i}:")
+            print(f"  关联查询: {query_text}")
+            print(f"  存储时间: {timestamp}")
+            print(f"  相似度: {result['similarity']:.2f}")
+            print(f"  内容摘要: {result['document'][:100]}...\n")
+
+    # 2. 执行网络搜索（无论本地是否有结果）
+    web_results = search_web(query, browser, search_page)
+
+    # DEBUG模式下打印网络结果信息
+    if DEBUG and web_results:
+        print("\n===== 网络搜索结果 =====")
+        for i, result in enumerate(web_results, 1):
+            print(f"网络结果 {i}:")
+            print(f"  标题: {result['title']}")
+            print(f"  URL: {result['url']}\n")
+
+    # 3. 提取并合并所有结果文本
+    local_texts = [r["document"] for r in local_results]
+    web_texts = [r["content"] for r in web_results]
+    all_texts = local_texts + web_texts
+    combined_result = "\n".join(all_texts) if all_texts else "未找到相关结果"
+
+    # 4. 存储新的网络结果到本地（自动去重）
+    for web_result in web_results:
+        if web_result["content"] and "未找到相关结果" not in web_result[
+            "content"]:
+            store_to_local(query, web_result["content"])
+
+    return combined_result
 
 
 def get_openai_client():
@@ -46,7 +276,7 @@ def generate_search_query(prompt):
     response = client.chat.completions.create(
         model="qwen-plus",
         messages=[{"role": "user", "content":
-            f"为回答以下问题，直接生成中文搜索关键词搜索房价相关政策，要求简洁且覆盖核心信息，包括年份，地点(精确到区)等，不包含额外的回答语句。\n问题：{prompt}"}]
+            f"为回答以下问题，直接生成中文搜索关键词搜索房价相关政策数据，要求简洁且覆盖核心信息，包括年份，地点(精确到区)等，不需要包含‘走势’,‘政策’等限定性过强的关键词。不包含额外的回答语句。示例：对于问题'2025年Q1上海黄浦区小南门房价走势如何？',需要检索'2025 上海 黄浦 小南门'。\n问题：{prompt}"}]
     )
     return response.choices[0].message.content.strip()
 
@@ -96,58 +326,74 @@ def llm_with_iteration(prompt):
     search_results = ""
     current_prediction = ""
 
-    while iterations < MAX_ITERATIONS:
-        if iterations == 0:
-            search_query = generate_search_query(prompt)
-            search_results = search_web(search_query)
-
-            indicators = ask_needed_indicators(prompt)
-            financial_data = get_financial_data(indicators)
-
-            if DEBUG:
-                print(f"\n[搜索关键词]：{search_query}")
-                print(f"\n[金融指标]：{indicators}")
-                print(f"\n[金融数据]：\n{financial_data}")
-
-            enhanced_prompt = (
-                f"根据以下政策搜索结果与金融数据预测房价走势：\n"
-                f"搜索结果：\n{search_results}\n"
-                f"金融数据（截至目前）：\n{financial_data}\n"
-                f"问题：{prompt}\n请直接预测接下来房价会上升或下降，并说明原因，不要输出多余语句。"
-            )
-        else:
-            assess_result = self_evaluate(current_prediction)
-            if DEBUG:
-                print(f"\n[自我评估]：{assess_result}")
-
-            if any(k in assess_result for k in ["未明确", "遗漏", "不明", "不确定", "忽略", "缺", "过度"]):
-                new_query = generate_search_query(f"{prompt}。需补充信息：{assess_result}")
-                new_search = search_web(new_query)
-                search_results += "\n" + new_search
-
-                enhanced_prompt = (
-                    f"基于初始预测：{current_prediction}\n"
-                    f"补充搜索信息：\n{new_search}\n"
-                    f"问题：{prompt}\n请重新给出更准确的预测。"
-                )
-            else:
-                break
-
-        response = client.chat.completions.create(
-            model="qwen-plus",
-            messages=[{"role": "user", "content": enhanced_prompt}]
+    # 启动浏览器并保持实例（带缓存）
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=False,
+            args=["--enable-features=NetworkService,NetworkServiceInProcess"],
         )
-        current_prediction = response.choices[0].message.content.strip()
+        # 创建搜索专用页面
+        search_page = browser.new_page(
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                       'AppleWebKit/537.36 (KHTML, like Gecko) '
+                       'Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0'
+        )
 
-        if DEBUG:
-            print(f"\n[第{iterations + 1}轮预测]：{current_prediction}")
+        try:
+            while iterations < MAX_ITERATIONS:
+                if iterations == 0:
+                    search_query = generate_search_query(prompt)
+                    search_results = search_with_local_priority(search_query,
+                                                                browser,
+                                                                search_page)
 
-        iterations += 1
+                    enhanced_prompt = (
+                        f"当前时间为：{datetime.now().strftime('%Y-%m-%d')}\n"
+                        f"根据以下政策搜索结果预测房价走势：\n"
+                        f"搜索结果：\n{search_results}\n"
+                        f"问题：{prompt}\n请直接预测接下来房价会上升或下降，并说明原因，不要输出多余语句。"
+                    )
+                else:
+                    assess_result = self_evaluate(current_prediction)
+                    if DEBUG:
+                        print(f"\n[自我评估]：{assess_result}")
+
+                    if any(k in assess_result for k in
+                           ["未明确", "遗漏", "不明", "不确定", "忽略", "缺",
+                            "过度"]):
+                        new_query = generate_search_query(
+                            f"{prompt}。需补充信息：{assess_result}")
+                        new_search = search_with_local_priority(new_query,
+                                                                browser,
+                                                                search_page)
+                        search_results += "\n" + new_search
+
+                        enhanced_prompt = (
+                            f"基于初始预测：{current_prediction}\n"
+                            f"补充搜索信息：\n{new_search}\n"
+                            f"问题：{prompt}\n请重新给出更准确的预测。"
+                        )
+                    else:
+                        break
+
+                response = client.chat.completions.create(
+                    model="qwen-plus",
+                    messages=[{"role": "user", "content": enhanced_prompt}]
+                )
+                current_prediction = response.choices[0].message.content.strip()
+
+                if DEBUG:
+                    print(f"\n[第{iterations + 1}轮预测]：{current_prediction}")
+
+                iterations += 1
+        finally:
+            # 迭代结束后关闭所有页面和浏览器
+            search_page.close()
+            browser.close()
 
     return current_prediction
 
 
-# 示例入口
 if __name__ == "__main__":
     query = "2025年Q3上海浦东严桥路房价走势如何？"
     original_stdout = sys.stdout
