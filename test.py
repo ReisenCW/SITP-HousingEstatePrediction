@@ -276,7 +276,7 @@ def generate_search_query(prompt):
     response = client.chat.completions.create(
         model="qwen-plus",
         messages=[{"role": "user", "content":
-            f"为回答以下问题，直接生成中文搜索关键词搜索房价相关政策数据，要求简洁且覆盖核心信息，包括年份，地点(精确到区)等，不需要包含‘走势’,‘政策’等限定性过强的关键词。不包含额外的回答语句。示例：对于问题'2025年Q1上海黄浦区小南门房价走势如何？',需要检索'2025 上海 黄浦 小南门'。\n问题：{prompt}"}]
+            f"请根据下列房价预测问题，提取最简明、最核心的中文搜索关键词，要求：\n - 仅包含年份、城市、区县、街道/小区等地名信息； \n - 不包含“走势”、“预测”、“政策”等限定性或无关词汇；\n - 不输出任何解释、标点或额外语句，仅输出关键词，关键词之间用空格分隔。\n 示例：问 2025年Q1上海黄浦区小南门房价走势如何？→ 输出 2025 上海 黄浦 小南门。\n 问题：{prompt}"}]
     )
     return response.choices[0].message.content.strip()
 
@@ -286,7 +286,7 @@ def self_evaluate(prediction):
     response = client.chat.completions.create(
         model="qwen-plus",
         messages=[{"role": "user", "content":
-            f"分析以下房价预测的潜在漏洞，重点检查是否遗漏政策时效性、区域差异、数据准确性等关键因素，用简洁语言列出问题：\n{prediction}"}]
+            f"请针对以下房价预测，列出所有潜在漏洞和不足，要求：\n - 只输出问题清单，不要复述预测内容；\n - 按“政策时效性”、“区域代表性”、“数据支撑”、“逻辑链条”、“风险遗漏”等分类，每类下可有多条；\n - 语言简洁明了。\n\n预测内容：\n{prediction}"}]
     )
     return response.choices[0].message.content.strip()
 
@@ -326,7 +326,7 @@ def llm_with_iteration(prompt):
     search_results = ""
     current_prediction = ""
 
-    # 启动浏览器并保持实例（带缓存）
+    # 启动浏览器并保持实例
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=False,
@@ -348,10 +348,13 @@ def llm_with_iteration(prompt):
                                                                 search_page)
 
                     enhanced_prompt = (
-                        f"当前时间为：{datetime.now().strftime('%Y-%m-%d')}\n"
-                        f"根据以下政策搜索结果预测房价走势：\n"
+                        f"当前时间：{datetime.now().strftime('%Y-%m-%d')}\n"
+                        f"请基于下列政策和市场信息，预测“{prompt}”的房价走势。要求：\n"
+                        f"1. 先用一句话给出明确预测结论（如“预计2025年Q3上海浦东严桥路房价将温和上涨，涨幅约xx-xx”, 置信度为xx）。\n"
+                        f"2. 用要点列出主要依据，每条注明对应的搜索结果编号或简要来源（如“根据结果1...”）。\n"
+                        f"3. 简要列出可能的风险或不确定性因素。\n"
+                        f"4. 输出内容分为“预测结论”、“主要依据”、“风险提示”三部分，禁止输出与预测无关的内容。\n\n"
                         f"搜索结果：\n{search_results}\n"
-                        f"问题：{prompt}\n请直接预测接下来房价会上升或下降，并说明原因，不要输出多余语句。"
                     )
                 else:
                     assess_result = self_evaluate(current_prediction)
@@ -362,7 +365,7 @@ def llm_with_iteration(prompt):
                            ["未明确", "遗漏", "不明", "不确定", "忽略", "缺",
                             "过度"]):
                         new_query = generate_search_query(
-                            f"{prompt}。需补充信息：{assess_result}")
+                            f"请根据对“{prompt}”的预测自我评估结果：{assess_result}，明确指出还需补充哪些关键信息或数据（如政策时效、区域供需、最新市场数据、具体楼盘信息等），并将这些补充点转化为最简明、最核心的中文检索关键词。要求：仅输出关键词，关键词之间用空格分隔，不输出任何解释或多余语句。")
                         new_search = search_with_local_priority(new_query,
                                                                 browser,
                                                                 search_page)
@@ -373,6 +376,8 @@ def llm_with_iteration(prompt):
                             f"补充搜索信息：\n{new_search}\n"
                             f"问题：{prompt}\n请重新给出更准确的预测。"
                         )
+                        if DEBUG:
+                            print(f"检索式: {new_query} ")
                     else:
                         break
 
