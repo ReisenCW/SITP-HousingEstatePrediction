@@ -4,11 +4,10 @@ from datetime import datetime
 import pandas_datareader.data as web
 from openai import OpenAI
 from playwright.sync_api import sync_playwright
-from sentence_transformers import SentenceTransformer
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma as LangchainChroma
 from config import Config
-
+from expLib import ExpLib
 # 初始化langchain的Chroma向量数据库
 if not os.path.exists(Config.PERSIST_DIRECTORY):
     os.makedirs(Config.PERSIST_DIRECTORY)
@@ -45,14 +44,24 @@ class Agent:
             persist_directory=config.PERSIST_DIRECTORY,
             collection_name="housing_search_results"
         )
+        self.exp_lib = ExpLib(embedding_func=self.embedding_func)
 
-    def store_to_local(self, query, search_result):
+    def store_to_local(self, query, search_result, threshold=0.95):
+        # 检查是否为重复内容（与库中已有内容高相似度则跳过）
+        existing = self.vectorstore.similarity_search_with_score(search_result, k=3)
+        for doc, score in existing:
+            similarity = 1 - score if score is not None else 0
+            if similarity > threshold:
+                if self.config.DEBUG:
+                    print(f"查重：与已有内容相似度{similarity:.2f}，跳过存储。")
+                return False
         self.vectorstore.add_texts(
             [search_result],
             metadatas=[{"query": query, "timestamp": datetime.now().isoformat()}]
         )
         if self.config.DEBUG:
             print("已存储新结果到本地向量库")
+        return True
 
     def local_search(self, query, threshold=0.7):
         results = self.vectorstore.similarity_search_with_score(query, k=self.config.LOCAL_SEARCH_TOP_K)
@@ -250,6 +259,19 @@ class Agent:
         iterations = 0
         search_results = ""
         current_prediction = ""
+        used_queries = set()
+        # 检索经验库，拼接相似历史经验和经验总结
+        similar_exps = self.exp_lib.retrieve_similar(prompt, top_k=2)
+        exp_summary = self.exp_lib.summarize_experience(self.client, max_records=8)
+        exp_context = ""
+        if similar_exps:
+            exp_context += "\n\n【历史相关经验】\n"
+            for i, exp in enumerate(similar_exps, 1):
+                exp_context += f"经验{i}: 问题：{exp['query']}\n预测：{exp['prediction']}\n自我评估：{exp['evaluation']}\n"
+        if exp_summary:
+            exp_context += f"\n【经验总结】\n{exp_summary}\n"
+        if Config.DEBUG:
+            print(f"经验库上下文：{exp_context}")
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
@@ -262,8 +284,11 @@ class Agent:
             )
             try:
                 while iterations < self.config.MAX_ITERATIONS:
+                    if Config.DEBUG:
+                        print(f"\n[===============第{iterations + 1}轮迭代===============]：")
                     if iterations == 0:
                         search_query = self.generate_search_query(prompt)
+                        used_queries.add(search_query)
                         search_results = self.search_with_local_priority(search_query,
                                                                          browser,
                                                                          search_page)
@@ -274,59 +299,80 @@ class Agent:
                             f"2. 用要点列出主要依据，每条注明对应的搜索结果编号或简要来源（如“根据结果1...”）。\n"
                             f"3. 简要列出可能的风险或不确定性因素。\n"
                             f"4. 输出内容分为“预测结论”、“主要依据”、“风险提示”三部分，禁止输出与预测无关的内容。\n\n"
+                            f"{exp_context}"
                             f"搜索结果：\n{search_results}\n"
                         )
+                        if self.config.DEBUG:
+                            print(f"检索式: {search_query} ")
                     else:
                         assess_result = self.self_evaluate(current_prediction)
                         if self.config.DEBUG:
                             print(f"\n[自我评估]：{assess_result}")
-                        if any(k in assess_result for k in
-                               ["未明确", "遗漏", "不明", "不确定", "忽略", "缺", "过度"]):
-                            new_query = self.generate_search_query(
-                                f"请根据对“{prompt}”的预测自我评估结果：{assess_result}，明确指出还需补充哪些关键信息或数据（如政策时效、区域供需、最新市场数据、具体楼盘信息等），并将这些补充点转化为最简明、最核心的中文检索关键词。要求：仅输出关键词，关键词之间用空格分隔，不输出任何解释或多余语句。")
-                            new_search = self.search_with_local_priority(new_query,
-                                                                         browser,
-                                                                         search_page)
-                            search_results += "\n" + new_search
+                        # 生成补充检索关键词时，要求不要与used_queries重复
+                        used_query_str = "；".join(used_queries)
+                        new_query_prompt = (
+                            f"请根据对“{prompt}”的预测自我评估结果：{assess_result}，明确指出还需补充哪些关键信息或数据（如政策时效、区域供需、最新市场数据、具体楼盘信息等），并将这些补充点转化为最简明、最核心的中文检索关键词。要求：仅输出关键词，关键词之间用空格分隔，不输出任何解释或多余语句。关键词的数量不要超过5个。\n"
+                            f"请不要重复使用以下已用过的关键词组合：{used_query_str}"
+                        )
+                        new_query = self.generate_search_query(new_query_prompt)
+                        used_queries.add(new_query)
+                        new_search = self.search_with_local_priority(new_query,
+                                                                        browser,
+                                                                        search_page)
+                        search_results += "\n" + new_search
+                        enhanced_prompt = (
+                            f"基于初始预测：{current_prediction}\n"
+                            f"和补充搜索到的信息：\n{new_search}\n"
+                            f"{exp_context}"
+                            f"重新预测问题“{prompt}”, 给出更准确的预测。要求：\n"
+                            f"1. 先用一句话给出明确预测结论（如“预计2025年Q3上海浦东严桥路房价将温和上涨，涨幅约xx-xx”, 置信度为xx）。\n"
+                            f"2. 用要点列出主要依据，每条注明对应的搜索结果编号或简要来源（如“根据结果1...”）。\n"
+                            f"3. 简要列出可能的风险或不确定性因素。\n"
+                            f"4. 输出内容分为“预测结论”、“主要依据”、“风险提示”三部分，禁止输出与预测无关的内容。\n\n"
+                        )
+                        if iterations == self.config.MAX_ITERATIONS - 1:
                             enhanced_prompt = (
                                 f"基于初始预测：{current_prediction}\n"
-                                f"补充搜索信息：\n{new_search}\n"
-                                f"问题：{prompt}\n请重新给出更准确的预测。"
+                                f"和补充搜索到的信息：\n{new_search}\n"
+                                f"{exp_context}"
+                                f"对问题“{prompt}”, 进行最终预测。要求：\n"
+                                f"1. 用一句话给出明确预测结论（如“预计2025年Q3上海浦东严桥路房价将温和上涨，涨幅约xx-xx”, 置信度为xx）。\n"
+                                f"2. 用要点列出主要依据，每条注明对应的搜索结果编号或简要来源（如“根据结果1...”）。\n"
+                                f"3. 输出内容分为“预测结论”、“主要依据”，禁止输出与预测无关的内容。\n\n"
                             )
-                            if self.config.DEBUG:
-                                print(f"检索式: {new_query} ")
-                        else:
-                            break
+                        if self.config.DEBUG:
+                            print(f"检索式: {new_query} ")
                     response = self.client.chat.completions.create(
                         model="qwen-plus",
                         messages=[{"role": "user", "content": enhanced_prompt}]
                     )
                     current_prediction = response.choices[0].message.content.strip()
-                    if self.config.DEBUG:
+                    if self.config.DEBUG and iterations < self.config.MAX_ITERATIONS - 1:
                         print(f"\n[第{iterations + 1}轮预测]：{current_prediction}")
                     iterations += 1
             finally:
                 search_page.close()
                 browser.close()
+        # 存储本次经验
+        self.exp_lib.add(
+            query=prompt,
+            keywords="；".join(list(used_queries)),
+            summary=search_results[:500],
+            prediction=current_prediction,
+            evaluation=self.self_evaluate(current_prediction)
+        )
         return current_prediction
 
-
 if __name__ == "__main__":
-    query = "2025年Q3上海浦东严桥路房价走势如何？"
+    query = "2025年Q3上海陆家嘴房价走势如何？"
     agent = Agent(Config())
     original_stdout = sys.stdout
     with open('answer.md', 'w', encoding='utf-8') as f:
         sys.stdout = f
         result = agent.llm_with_iteration(query)
-        print("* 最终预测结果:\n    * " + result)
+        print("\n* 最终预测结果:\n * " + result)
     sys.stdout = original_stdout
     print("\n✅ 预测结果已写入文件 answer.md")
-
-    # 打印本地向量数据库所有内容
-    # all_docs = vectorstore._collection.get()
-    # for doc, meta in zip(all_docs["documents"], all_docs["metadatas"]):
-    #     print(doc)
-    #     print(meta)
 
     # 本周进度：
     # 1.网上搜索信息保存：由于网页是动态加载的,html中body无网页内容,因此不再使用require和bs4,改用playwright自动化
@@ -334,3 +380,5 @@ if __name__ == "__main__":
     # 3.对于检索到的消息,进行分片,通过向量化取出与问题有关的内容作为上下文
     # 4.优化了prompt
     # 5.将函数和常量进行封装(Config和Agent类),使代码结构更清晰
+    # 6.记录检索关键词,防止迭代的时候不断重复搜索相同内容
+    # 7.增加一个经验库:将历史检索结果和预测结果进行存储,方便下次进行参考
