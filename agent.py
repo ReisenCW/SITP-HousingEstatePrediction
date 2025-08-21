@@ -367,7 +367,7 @@ class Agent:
         return current_prediction
 
 if __name__ == "__main__":
-    query = "2025年Q3上海徐汇滨江房价走势如何？"
+    query = "2024年Q4上海徐汇滨江房价走势如何？"
     agent = Agent(Config())
     original_stdout = sys.stdout
     with open('answer.md', 'w', encoding='utf-8') as f:
@@ -377,11 +377,11 @@ if __name__ == "__main__":
     sys.stdout = original_stdout
     print("\n✅ 预测结果已写入文件 answer.md")
 
-    # 本周进度：
-    # 1.网上搜索信息保存：由于网页是动态加载的,html中body无网页内容,因此不再使用require和bs4,改用playwright自动化
-    # 2.网上搜索信息保存到本地Chroma向量数据库(Langchain框架), 下次搜索时先在本地搜索,再在网络搜索
-    # 3.对于检索到的消息,进行分片,通过向量化取出与问题有关的内容作为上下文
-    # 4.优化了prompt
-    # 5.将函数和常量进行封装(Config和Agent类),使代码结构更清晰
-    # 6.记录检索关键词,防止迭代的时候不断重复搜索相同内容
-    # 7.增加一个经验库:将历史检索结果和预测结果进行存储,方便下次进行参考
+    # TODO:
+    # 1. 删除数据库信息,历史经验等
+    # 2. 搜索数据的时候只搜索预测时间之前的内容
+    # 3. 经验只用预测时间之前的内容
+    # 4. 选择合适的模型
+    # 5. 用之前的数据测试模型效果(比如xx年Qx出了一个大政策,房价改变很大,预测之后一段时间的走势来做验证)
+
+
