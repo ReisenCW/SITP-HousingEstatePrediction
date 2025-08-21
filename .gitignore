@@ -1,0 +1,7 @@
+# Existing content of .gitignore
+# ...existing code...
+
+# Ignore specific files
+answer.md
+housing_data.csv
+test.py
