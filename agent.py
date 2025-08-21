@@ -49,7 +49,7 @@ class Agent:
     def store_to_local(self, query, search_result, threshold=0.95):
         # 检查是否为重复内容（与库中已有内容高相似度则跳过）
         existing = self.vectorstore.similarity_search_with_score(search_result, k=3)
-        for doc, score in existing:
+        for doc, score in existing: # score代表距离, 越小说明越相似
             similarity = 1 - score if score is not None else 0
             if similarity > threshold:
                 if self.config.DEBUG:
@@ -69,15 +69,14 @@ class Agent:
         for doc, score in results:
             similarity = 1 - score if score is not None else 0
             if self.config.DEBUG:
-                print(f"相似度: {similarity}")
+                abstract = doc.page_content[:10] if hasattr(doc, 'page_content') else str(doc)[:10]
+                print(f"doc前10个字符: {abstract} , 相似度: {similarity}")
             if similarity > threshold:
                 matched_results.append({
                     "document": doc.page_content if hasattr(doc, 'page_content') else str(doc),
                     "metadata": doc.metadata if hasattr(doc, 'metadata') else {},
                     "similarity": similarity
                 })
-                if self.config.DEBUG:
-                    print(f"本地搜索匹配结果: {matched_results} \n")
         return matched_results
 
     def retrieve_info(self, url, browser):
@@ -87,7 +86,7 @@ class Agent:
                            'AppleWebKit/537.36 (KHTML, like Gecko) '
                            'Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0'
             )
-            page.goto(url, timeout=10000)
+            page.goto(url, timeout=5000)
             title = page.title()
             content = page.locator('div.txtinfos').text_content()
             content = content.strip() if content else ""
@@ -128,8 +127,8 @@ class Agent:
         encoded_query = quote(query)
         url = f"https://so.eastmoney.com/news/s?keyword={encoded_query}"
         try:
-            search_page.goto(url, timeout=10000)
-            search_page.wait_for_selector('div.news_list', timeout=5000)
+            search_page.goto(url, timeout=5000)
+            search_page.wait_for_selector('div.news_list', timeout=3000)
             results = []
             news_items = search_page.locator('div.news_list div.news_item')
             news_count = news_items.count()
@@ -152,28 +151,33 @@ class Agent:
         except Exception as e:
             return [{"title": "搜索出错", "url": url, "content": f"东方财富网搜索出错: {str(e)}"}]
 
-    def extract_relevant_chunks(self, query, texts, top_k=8, chunk_size=200):
+    def extract_relevant_chunks(self, query, texts, top_k=8, chunk_size=500):
         """
-        将每条文本分割为片段，计算与query的相似度，返回最相关的top_k片段。
+        将每条文本优先按句号（中英文）分割为片段，计算与query的相似度，返回最相关的top_k片段。
         """
         import re
-        # 1. 分割为片段（按段落或句子，长度不超过chunk_size）
         chunks = []
         for idx, text in enumerate(texts):
-            # 按段落分割
+            # 先按段落分割
             for para in re.split(r'\n+', text):
                 para = para.strip()
                 if not para:
                     continue
-                # 长段落再按句子分割
-                if len(para) > chunk_size:
-                    sentences = re.split(r'[。！？!?.]', para)
-                    for sent in sentences:
-                        sent = sent.strip()
-                        if sent:
-                            chunks.append((f"doc{idx+1}", sent))
-                else:
-                    chunks.append((f"doc{idx+1}", para))
+                # 优先按句号（中英文）分割
+                sentences = re.split(r'(?<=[。.!?！？])', para)
+                for sent in sentences:
+                    sent = sent.strip()
+                    if not sent:
+                        continue
+                    # 若句子仍然过长，再按chunk_size截断
+                    if len(sent) > chunk_size:
+                        # 按chunk_size滑窗截断
+                        for i in range(0, len(sent), chunk_size):
+                            chunk = sent[i:i+chunk_size]
+                            if chunk:
+                                chunks.append((f"doc{idx+1}", chunk))
+                    else:
+                        chunks.append((f"doc{idx+1}", sent))
         if not chunks:
             return []
         # 2. 计算embedding
@@ -218,8 +222,10 @@ class Agent:
         response = self.client.chat.completions.create(
             model="qwen-plus",
             messages=[{"role": "user", "content":
-                f"请根据下列房价预测问题，提取最简明、最核心的中文搜索关键词，要求：\n - 仅包含年份、城市、区县、街道/小区等地名信息； \n - 不包含“走势”、“预测”、“政策”等限定性或无关词汇；\n - 不输出任何解释、标点或额外语句，仅输出关键词，关键词之间用空格分隔。\n 示例：问 2025年Q1上海黄浦区小南门房价走势如何？→ 输出 2025 上海 黄浦 小南门。\n 问题：{prompt}"}]
+                f"请根据下列房价预测问题，提取最简明、最核心的中文搜索关键词，要求：\n - 仅包含年份、城市、区县、街道/小区等地名信息； \n - 不包含“走势”、“预测”、“政策”等限定性或无关词汇；\n - 不输出任何解释、标点或额外语句，仅输出关键词，关键词之间用空格分隔。\n 示例：问 2025年Q1上海黄浦区小南门房价走势如何？→ 输出 上海 黄浦 小南门。\n 问题：{prompt}"}]
         )
+        if Config.DEBUG:
+            print(f"检索式：{response.choices[0].message.content.strip()}")
         return response.choices[0].message.content.strip()
 
     def self_evaluate(self, prediction):
@@ -228,6 +234,8 @@ class Agent:
             messages=[{"role": "user", "content":
                 f"请针对以下房价预测，列出所有潜在漏洞和不足，要求：\n - 只输出问题清单，不要复述预测内容；\n - 按“政策时效性”、“区域代表性”、“数据支撑”、“逻辑链条”、“风险遗漏”等分类，每类下可有多条；\n - 语言简洁明了。\n\n预测内容：\n{prediction}"}]
         )
+        if Config.DEBUG:
+            print(f"[自我评估]:\n {response.choices[0].message.content.strip()}")
         return response.choices[0].message.content.strip()
 
     def ask_needed_indicators(self, prompt):
@@ -302,12 +310,8 @@ class Agent:
                             f"{exp_context}"
                             f"搜索结果：\n{search_results}\n"
                         )
-                        if self.config.DEBUG:
-                            print(f"检索式: {search_query} ")
                     else:
                         assess_result = self.self_evaluate(current_prediction)
-                        if self.config.DEBUG:
-                            print(f"\n[自我评估]：{assess_result}")
                         # 生成补充检索关键词时，要求不要与used_queries重复
                         used_query_str = "；".join(used_queries)
                         new_query_prompt = (
@@ -326,7 +330,7 @@ class Agent:
                             f"{exp_context}"
                             f"重新预测问题“{prompt}”, 给出更准确的预测。要求：\n"
                             f"1. 先用一句话给出明确预测结论（如“预计2025年Q3上海浦东严桥路房价将温和上涨，涨幅约xx-xx”, 置信度为xx）。\n"
-                            f"2. 用要点列出主要依据，每条注明对应的搜索结果编号或简要来源（如“根据结果1...”）。\n"
+                            f"2. 用要点列出主要依据，每条注明对应的搜索结果编号或简要来源（如“根据结果...”）。\n"
                             f"3. 简要列出可能的风险或不确定性因素。\n"
                             f"4. 输出内容分为“预测结论”、“主要依据”、“风险提示”三部分，禁止输出与预测无关的内容。\n\n"
                         )
@@ -337,11 +341,10 @@ class Agent:
                                 f"{exp_context}"
                                 f"对问题“{prompt}”, 进行最终预测。要求：\n"
                                 f"1. 用一句话给出明确预测结论（如“预计2025年Q3上海浦东严桥路房价将温和上涨，涨幅约xx-xx”, 置信度为xx）。\n"
-                                f"2. 用要点列出主要依据，每条注明对应的搜索结果编号或简要来源（如“根据结果1...”）。\n"
+                                f"2. 用要点列出主要依据，每条注明对应的搜索结果编号或简要来源（如“根据结果...”）。\n"
                                 f"3. 输出内容分为“预测结论”、“主要依据”，禁止输出与预测无关的内容。\n\n"
                             )
-                        if self.config.DEBUG:
-                            print(f"检索式: {new_query} ")
+
                     response = self.client.chat.completions.create(
                         model="qwen-plus",
                         messages=[{"role": "user", "content": enhanced_prompt}]
@@ -364,7 +367,7 @@ class Agent:
         return current_prediction
 
 if __name__ == "__main__":
-    query = "2025年Q3上海陆家嘴房价走势如何？"
+    query = "2025年Q3上海徐汇滨江房价走势如何？"
     agent = Agent(Config())
     original_stdout = sys.stdout
     with open('answer.md', 'w', encoding='utf-8') as f:
