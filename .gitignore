@@ -1,3 +1,4 @@
+
 # Existing content of .gitignore
 # ...existing code...
 
@@ -5,3 +6,5 @@
 answer.md
 housing_data.csv
 test.py
+local_search_db/
+experience_db.json
