@@ -1,7 +1,7 @@
 import os
 import sys
+import re
 from datetime import datetime
-import pandas_datareader.data as web
 from openai import OpenAI
 from playwright.sync_api import sync_playwright
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -21,14 +21,14 @@ vectorstore = LangchainChroma(
 )
 
 # 映射常用指标到 pandas_datareader/FRED 支持的代码
-indicator_mapping = {
-    "GDP": "CHNGDPRQDSMEI",
-    "CPI": "CHNCPIALLMINMEI",
-    "失业率": "CHNURTOTQDSMEI",
-    "M2": "CHNM2",
-    "贷款利率": "CHNIRLTLT01STM",
-    "LPR": "CHNLPR",
-}
+# indicator_mapping = {
+#     "GDP": "CHNGDPRQDSMEI",
+#     "CPI": "CHNCPIALLMINMEI",
+#     "失业率": "CHNURTOTQDSMEI",
+#     "M2": "CHNM2",
+#     "贷款利率": "CHNIRLTLT01STM",
+#     "LPR": "CHNLPR",
+# }
 
 
 class Agent:
@@ -46,7 +46,7 @@ class Agent:
         )
         self.exp_lib = ExpLib(embedding_func=self.embedding_func)
 
-    def store_to_local(self, query, search_result, threshold=0.95):
+    def store_to_local(self, query, search_result, timestamp=None, title=None, threshold=0.95):
         # 检查是否为重复内容（与库中已有内容高相似度则跳过）
         existing = self.vectorstore.similarity_search_with_score(search_result, k=3)
         for doc, score in existing: # score代表距离, 越小说明越相似
@@ -55,26 +55,44 @@ class Agent:
                 if self.config.DEBUG:
                     print(f"查重：与已有内容相似度{similarity:.2f}，跳过存储。")
                 return False
+        meta = {"query": query}
+        if timestamp:
+            meta["timestamp"] = timestamp
+        else:
+            meta["timestamp"] = datetime.now().isoformat()
+        if title:
+            meta["title"] = title
         self.vectorstore.add_texts(
             [search_result],
-            metadatas=[{"query": query, "timestamp": datetime.now().isoformat()}]
+            metadatas=[meta]
         )
         if self.config.DEBUG:
             print("已存储新结果到本地向量库")
         return True
 
-    def local_search(self, query, threshold=0.7):
+    def local_search(self, query, threshold=0.7, cutoff_time=None):
         results = self.vectorstore.similarity_search_with_score(query, k=self.config.LOCAL_SEARCH_TOP_K)
         matched_results = []
         for doc, score in results:
             similarity = 1 - score if score is not None else 0
+            meta = doc.metadata if hasattr(doc, 'metadata') else {}
+            # 过滤掉timestamp晚于cutoff_time的内容
+            if cutoff_time and meta.get('timestamp'):
+                try:
+                    doc_time = meta['timestamp'][:10]
+                    if doc_time > cutoff_time:
+                        if self.config.DEBUG:
+                            print(f"过滤掉超出时间的内容，time={doc_time}，cutoff={cutoff_time}")
+                        continue
+                except Exception:
+                    pass
             if self.config.DEBUG:
                 abstract = doc.page_content[:10] if hasattr(doc, 'page_content') else str(doc)[:10]
                 print(f"doc前10个字符: {abstract} , 相似度: {similarity}")
             if similarity > threshold:
                 matched_results.append({
                     "document": doc.page_content if hasattr(doc, 'page_content') else str(doc),
-                    "metadata": doc.metadata if hasattr(doc, 'metadata') else {},
+                    "metadata": meta,
                     "similarity": similarity
                 })
         return matched_results
@@ -122,31 +140,84 @@ class Agent:
         filtered = [results[i] for i in range(len(results)) if keep[i]]
         return filtered
 
-    def search_web(self, query, browser, search_page):
+    def search_web(self, query, browser, search_page, cutoff_time=None, max_pages=10):
         from urllib.parse import quote
+        import concurrent.futures
         encoded_query = quote(query)
         url = f"https://so.eastmoney.com/news/s?keyword={encoded_query}"
         try:
-            search_page.goto(url, timeout=5000)
-            search_page.wait_for_selector('div.news_list', timeout=3000)
             results = []
-            news_items = search_page.locator('div.news_list div.news_item')
-            news_count = news_items.count()
-            for i in range(min(news_count, self.config.WEB_SEARCH_TOP_K)):
-                a_element = news_items.nth(i).locator('div.news_item_url a')
-                news_url = a_element.get_attribute('href')
-                news_title = a_element.text_content().strip() if a_element.text_content() else "无标题"
-                if news_url:
-                    detail = self.retrieve_info(news_url, browser)
-                    results.append(detail)
+            seen_urls = set()
+            page_num = 1
+            while len(results) < self.config.WEB_SEARCH_TOP_K and page_num <= max_pages:
+                if page_num == 1:
+                    search_page.goto(url, timeout=5000)
+                else:
+                    # 使用form.gotoform跳转到指定页
+                    try:
+                        form = search_page.locator('form.gotoform')
+                        input_box = form.locator('input[type="text"]')
+                        input_box.fill(str(page_num))
+                        form.evaluate("form => form.submit()")
+                        search_page.wait_for_selector('div.news_list', timeout=3000)
+                    except Exception as e:
+                        if self.config.DEBUG:
+                            print(f"翻页失败: {e}")
+                        break
+                search_page.wait_for_selector('div.news_list', timeout=3000)
+                news_items = search_page.locator('div.news_list div.news_item')
+                news_count = news_items.count()
+                # 先收集本页所有新闻元信息
+                news_meta_list = []
+                for i in range(news_count):
+                    a_element = news_items.nth(i).locator('div.news_item_url a')
+                    news_url = a_element.get_attribute('href')
+                    news_title = a_element.text_content().strip() if a_element.text_content() else "无标题"
+                    # 提取新闻时间
+                    timestamp = None
+                    try:
+                        timestamp_raw = news_items.nth(i).locator('div.news_item_time').text_content().strip()
+                        if timestamp_raw and len(timestamp_raw) >= 10:
+                            timestamp = timestamp_raw[:10]
+                    except Exception:
+                        timestamp = None
+                    # 跳过重复和超时内容
+                    if not news_url or news_url in seen_urls:
+                        continue
+                    if cutoff_time and timestamp and timestamp > cutoff_time:
+                        if self.config.DEBUG:
+                            print(f"跳过超出时间的新闻: {news_title}, {timestamp}")
+                        continue
+                    seen_urls.add(news_url)
+                    news_meta_list.append({
+                        "url": news_url,
+                        "title": news_title,
+                        "timestamp": timestamp
+                    })
+                # 并发抓正文
+                def fetch_detail(meta):
+                    return self.retrieve_info(meta["url"], browser) if meta["url"] else None
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    details = list(executor.map(fetch_detail, news_meta_list))
+                # 合并元信息和正文
+                for meta, detail in zip(news_meta_list, details):
+                    if detail:
+                        detail["title"] = meta["title"]
+                        detail["timestamp"] = meta["timestamp"]
+                        results.append(detail)
+                        if len(results) >= self.config.WEB_SEARCH_TOP_K:
+                            break
+                page_num += 1
             filtered_results = self.filter_similar_results(results, threshold=0.8)
             for res in filtered_results:
                 doc_text = f"{res.get('title', '')}\n{res.get('content', '')}"
-                self.store_to_local(query, doc_text)
+                # 存储时带上title和新闻时间
+                self.store_to_local(query, doc_text, timestamp=res.get('timestamp', None), title=res.get('title', ''))
             if self.config.DEBUG:
                 print("\n===== 过滤后网络搜索结果 =====")
                 for i, res in enumerate(filtered_results, 1):
-                    print(f"结果 {i}：{res.get('title', '')}（{res.get('url', '')}）")
+                    print(f"结果 {i}：{res.get('title', '')}("
+                          f"{res.get('url', '')})")
             return filtered_results
         except Exception as e:
             return [{"title": "搜索出错", "url": url, "content": f"东方财富网搜索出错: {str(e)}"}]
@@ -155,7 +226,6 @@ class Agent:
         """
         将每条文本优先按句号（中英文）分割为片段，计算与query的相似度，返回最相关的top_k片段。
         """
-        import re
         chunks = []
         for idx, text in enumerate(texts):
             # 先按段落分割
@@ -191,8 +261,8 @@ class Agent:
         relevant_chunks = [f"[{chunks[i][0]}] {chunks[i][1]}" for i in top_indices]
         return relevant_chunks
 
-    def search_with_local_priority(self, query, browser, search_page):
-        local_results = self.local_search(query)
+    def search_with_local_priority(self, query, browser, search_page, cutoff_time=None):
+        local_results = self.local_search(query, cutoff_time=cutoff_time)
         if self.config.DEBUG and local_results:
             print("\n===== 本地向量库搜索结果 =====")
             for i, result in enumerate(local_results, 1):
@@ -246,24 +316,41 @@ class Agent:
         )
         return response.choices[0].message.content.strip()
 
-    def get_financial_data(self, indicators):
-        start_date = f"{datetime.now().year}-01-01"
-        end_date = datetime.now().strftime("%Y-%m-%d")
-        financial_data = ""
-        for ind in indicators.split("、"):
-            symbol = indicator_mapping.get(ind.strip())
-            if not symbol:
-                financial_data += f"{ind}：暂不支持的数据\n"
-                continue
-            try:
-                df = web.DataReader(symbol, "fred", start_date, end_date)
-                latest = df.iloc[-1].values[0]
-                financial_data += f"{ind}：{latest}\n"
-            except Exception as e:
-                financial_data += f"{ind}：获取失败（{str(e)}）\n"
-        return financial_data
+    # def get_financial_data(self, indicators):
+    #     start_date = f"{datetime.now().year}-01-01"
+    #     end_date = datetime.now().strftime("%Y-%m-%d")
+    #     financial_data = ""
+    #     for ind in indicators.split("、"):
+    #         symbol = indicator_mapping.get(ind.strip())
+    #         if not symbol:
+    #             financial_data += f"{ind}：暂不支持的数据\n"
+    #             continue
+    #         try:
+    #             df = web.DataReader(symbol, "fred", start_date, end_date)
+    #             latest = df.iloc[-1].values[0]
+    #             financial_data += f"{ind}：{latest}\n"
+    #         except Exception as e:
+    #             financial_data += f"{ind}：获取失败（{str(e)}）\n"
+    #     return financial_data
 
     def llm_with_iteration(self, prompt):
+        # 用大模型解析预测时间，得到cutoff_time（如2024Q3->2024.10.1之前，2024年3月-4月->2024.5.1之前）
+        cutoff_time = None
+        time_parse_prompt = (
+            f"请从下列房价预测问题中提取出最晚的时间点，并将其转换为'YYYY-MM-DD'格式的下一个自然月1日。例如：'2024Q3'输出'2024-10-01'，'2024年3月-4月'输出'2024-05-01'，'2023年'输出'2024-01-01'。只输出日期，不要解释。\n问题：{prompt}"
+        )
+        try:
+            response = self.client.chat.completions.create(
+                model="qwen-plus",
+                messages=[{"role": "user", "content": time_parse_prompt}]
+            )
+            cutoff_time = response.choices[0].message.content.strip()
+            if not re.match(r"^20\d{2}-\d{2}-\d{2}$", cutoff_time):
+                cutoff_time = None
+        except Exception as e:
+            if self.config.DEBUG:
+                print(f"解析预测时间失败: {e}")
+            cutoff_time = None
         iterations = 0
         search_results = ""
         current_prediction = ""
@@ -282,7 +369,7 @@ class Agent:
             print(f"经验库上下文：{exp_context}")
         with sync_playwright() as p:
             browser = p.chromium.launch(
-                headless=True,
+                headless=False,
                 args=["--enable-features=NetworkService,NetworkServiceInProcess"],
             )
             search_page = browser.new_page(
@@ -297,9 +384,7 @@ class Agent:
                     if iterations == 0:
                         search_query = self.generate_search_query(prompt)
                         used_queries.add(search_query)
-                        search_results = self.search_with_local_priority(search_query,
-                                                                         browser,
-                                                                         search_page)
+                        search_results = self.search_with_local_priority(search_query, browser, search_page, cutoff_time=cutoff_time)
                         enhanced_prompt = (
                             f"当前时间：{datetime.now().strftime('%Y-%m-%d')}\n"
                             f"请基于下列政策和市场信息，预测“{prompt}”的房价走势。要求：\n"
@@ -378,10 +463,10 @@ if __name__ == "__main__":
     print("\n✅ 预测结果已写入文件 answer.md")
 
     # TODO:
-    # 1. 删除数据库信息,历史经验等
-    # 2. 搜索数据的时候只搜索预测时间之前的内容
-    # 3. 经验只用预测时间之前的内容
-    # 4. 选择合适的模型
-    # 5. 用之前的数据测试模型效果(比如xx年Qx出了一个大政策,房价改变很大,预测之后一段时间的走势来做验证)
+    # 1. 搜索数据的时候只搜索预测时间之前的内容
+    # 2. 经验只用预测时间之前的内容
+    # 3. 选择合适的模型
+    # 4. 用之前的数据测试模型效果(比如xx年Qx出了一个大政策,房价改变很大,预测之后一段时间的走势来做验证)
+    # 5. 综合别的网站(搜狐?)
 
 
