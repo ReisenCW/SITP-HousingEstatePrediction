@@ -498,7 +498,7 @@ class Agent:
         current_prediction = ""
         used_queries = set()
         # 检索经验库，拼接相似历史经验和经验总结
-        similar_exps = self.exp_lib.retrieve_similar(prompt, top_k=2)
+        similar_exps = self.exp_lib.retrieve_similar(prompt, top_k=2, cutoff_time=cutoff_time)
         exp_summary = self.exp_lib.summarize_experience(self.client, max_records=8)
         exp_context = ""
         if similar_exps:
@@ -611,9 +611,6 @@ if __name__ == "__main__":
     asyncio.run(main())
 
     # TODO:
-    # 1. 搜索数据的时候只搜索预测时间之前的内容
-    # 2. 经验只用预测时间之前的内容
-    # 3. 选择合适的模型
     # 4. 用之前的数据测试模型效果(比如xx年Qx出了一个大政策,房价改变很大,预测之后一段时间的走势来做验证)
     # 5. 综合别的网站(搜狐?)
 

@@ -19,28 +19,35 @@ class ExpLib:
         with open(self.db_path, "w", encoding="utf-8") as f:
             json.dump(self.experience_db, f, ensure_ascii=False, indent=2)
 
-    def add(self, query, keywords, summary, prediction, evaluation):
+    def add(self, query, keywords, summary, prediction, evaluation, timestamp=None):
+        # timestamp: 预测时间（如2025-10-01），否则用当前时间
         record = {
             "query": query,
             "keywords": keywords,
             "summary": summary,
             "prediction": prediction,
             "evaluation": evaluation,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": timestamp if timestamp else datetime.now().isoformat()
         }
         self.experience_db.append(record)
         self.save()
 
-    def retrieve_similar(self, query, top_k=3):
+    def retrieve_similar(self, query, top_k=3, cutoff_time=None):
         if not self.embedding_func or not self.experience_db:
             return []
+        # 只用timestamp在cutoff_time之前的经验
+        filtered_db = self.experience_db
+        if cutoff_time:
+            filtered_db = [item for item in self.experience_db if item.get("timestamp","")[:10] <= cutoff_time]
+        if not filtered_db:
+            return []
         query_emb = self.embedding_func.embed_query(query)
-        texts = [item["query"] for item in self.experience_db]
+        texts = [item["query"] for item in filtered_db]
         doc_embs = self.embedding_func.embed_documents(texts)
         from sklearn.metrics.pairwise import cosine_similarity
         sims = cosine_similarity([query_emb], doc_embs)[0]
         top_indices = sims.argsort()[-top_k:][::-1]
-        return [self.experience_db[i] for i in top_indices]
+        return [filtered_db[i] for i in top_indices]
 
     def summarize_experience(self, llm_client, max_records=10):
         # 取最近max_records条经验，拼接后让LLM总结经验规则
