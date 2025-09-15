@@ -1,7 +1,6 @@
 import os
 import sys
 import re
-import math
 import asyncio
 from urllib.parse import quote
 from sklearn.metrics.pairwise import cosine_similarity
@@ -153,6 +152,8 @@ class Agent:
             return results
         elif site == "shfgj":
             return await self.search_shfgj(query, browser, max_results=top_k, cutoff_time=cutoff_time)
+        elif site == "souhu":
+            return await self.search_souhu(query, browser, max_results=top_k, cutoff_time=cutoff_time)
         else:
             raise ValueError(f"未知site: {site}")
 
@@ -254,14 +255,15 @@ class Agent:
         encoded_query = quote(query)
         url = f"https://so.eastmoney.com/news/s?keyword={encoded_query}"
             
-        total_k = self.config.WEB_SEARCH_TOP_K
-        eastmoney_k = math.ceil(total_k / 2)
-        shfgj_k = total_k - eastmoney_k
+        eastmoney_k = self.config.EAST_SEARCH_TOP_K
+        shfgj_k = self.config.SHFGJ_SEARCH_TOP_K
+        souhu_k = self.config.SOUHU_SEARCH_TOP_K
         if self.config.DEBUG and cutoff_time:
             self.debug_log(f"[网络检索] 时间过滤cutoff_time: {cutoff_time}")
         eastmoney_results = await self.search_site(query, browser, search_page=search_page, site="eastmoney", top_k=eastmoney_k, cutoff_time=cutoff_time)
         shfgj_results = await self.search_site(query, browser, site="shfgj", top_k=shfgj_k, cutoff_time=cutoff_time)
-        all_results = eastmoney_results + shfgj_results
+        souhu_results = await self.search_site(query, browser, site="souhu", top_k=souhu_k, cutoff_time=cutoff_time)
+        all_results = eastmoney_results + shfgj_results + souhu_results
         # 严格过滤时间，只保留cutoff_time之前的内容
         if cutoff_time:
             all_results = [r for r in all_results if r.get('timestamp') and r.get('timestamp') <= cutoff_time]
@@ -360,6 +362,135 @@ class Agent:
         except Exception as e:
             return {"title": "获取失败", "url": url, "content": f"房管局正文抓取失败: {str(e)}"}
 
+    async def search_souhu(self, query, browser, max_results=3, cutoff_time=None):
+        results = []
+        encoded_query = quote(query)
+        url = f"https://search.sohu.com/?queryType=outside&keyword={encoded_query}&spm=smpc.csrpage.0.0.1756974578111gLBpDfV"
+        page = await browser.new_page()
+        seen_urls = set()
+        try:
+            await page.goto(url, timeout=8000)
+            last_height = await page.evaluate('document.body.scrollHeight')
+            scroll_tries = 0
+            while len(results) < max_results and scroll_tries < 20:
+                # 抓取当前页面所有候选
+                news_list = page.locator('div.search-content-left-cards')
+                cards_plain = news_list.locator('div.cards-small-plain')
+                cards_img = news_list.locator('div.cards-small-img')
+                candidates = []
+                # plain卡片
+                count_plain = await cards_plain.count()
+                for i in range(count_plain):
+                    card = cards_plain.nth(i)
+                    a_tag = card.locator('h4.plain-title a')
+                    news_url = await a_tag.get_attribute('href')
+                    news_title = await a_tag.text_content() or "无标题"
+                    news_title = news_title.strip()
+                    time_p = card.locator('p.plain-content-comm')
+                    time_text = None
+                    if await time_p.count() > 0:
+                        p_html = await time_p.nth(0).inner_html()
+                        import re
+                        time_texts = re.split(r'<a[^>]*>.*?</a>', p_html)
+                        date_match = None
+                        for t in time_texts:
+                            date_match = re.search(r'(20\d{2}-\d{1,2}-\d{1,2})', t)
+                            if date_match:
+                                time_text = date_match.group(1)
+                                break
+                    if not news_url or news_url in seen_urls:
+                        continue
+                    if cutoff_time and time_text and time_text > cutoff_time:
+                        continue
+                    seen_urls.add(news_url)
+                    candidates.append({
+                        "url": news_url,
+                        "title": news_title,
+                        "timestamp": time_text
+                    })
+                # img卡片
+                count_img = await cards_img.count()
+                for i in range(count_img):
+                    card = cards_img.nth(i)
+                    a_tag = card.locator('div.cards-content-title a')
+                    news_url = await a_tag.get_attribute('href')
+                    news_title = await a_tag.text_content() or "无标题"
+                    news_title = news_title.strip()
+                    time_p = card.locator('p.plain-content-comm')
+                    time_text = None
+                    if await time_p.count() > 0:
+                        p_html = await time_p.nth(0).inner_html()
+                        import re
+                        time_texts = re.split(r'<a[^>]*>.*?</a>', p_html)
+                        date_match = None
+                        for t in time_texts:
+                            date_match = re.search(r'(20\d{2}-\d{1,2}-\d{1,2})', t)
+                            if date_match:
+                                time_text = date_match.group(1)
+                                break
+                    if not news_url or news_url in seen_urls:
+                        continue
+                    if cutoff_time and time_text and time_text > cutoff_time:
+                        continue
+                    seen_urls.add(news_url)
+                    candidates.append({
+                        "url": news_url,
+                        "title": news_title,
+                        "timestamp": time_text
+                    })
+                # 对本轮所有候选逐条抓正文
+                for meta in candidates:
+                    if len(results) >= max_results:
+                        break
+                    detail = await self.retrieve_souhu_detail(meta["url"], browser)
+                    if detail:
+                        results.append({
+                            "url": meta["url"],
+                            "title": meta["title"],
+                            "timestamp": meta["timestamp"],
+                            "content": detail.get("content", "")
+                        })
+                # 滚动页面
+                if len(results) < max_results:
+                    await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                    await asyncio.sleep(1.2)
+                    new_height = await page.evaluate('document.body.scrollHeight')
+                    if new_height == last_height:
+                        scroll_tries += 1
+                    else:
+                        scroll_tries = 0
+                        last_height = new_height
+            await page.close()
+        except Exception as e:
+            if self.config.DEBUG:
+                self.debug_log(f"搜狐搜索异常: {e}")
+            await page.close()
+        return results
+
+    async def retrieve_souhu_detail(self, url, browser):
+        try:
+            page = await browser.new_page()
+            await page.goto(url, timeout=8000)
+            # 找到div.text下的article.article
+            try:
+                article = page.locator('div.text article.article')
+                if await article.count() == 0:
+                    await page.close()
+                    return None
+                # 获取所有文本内容
+                content = await article.text_content()
+                content = content.strip() if content else ""
+                if not content:
+                    await page.close()
+                    return None
+                await page.close()
+                return {"url": url, "content": content}
+            except Exception:
+                await page.close()
+                return None
+        except Exception as e:
+            return {"title": "获取失败", "url": url, "content": f"搜狐正文抓取失败: {str(e)}"}
+    
     # def extract_relevant_chunks(self, query, texts, top_k=8, chunk_size=500):
     #     """
     #     将每条文本优先按句号（中英文）分割为片段，计算与query的相似度，返回最相关的top_k片段。
@@ -586,14 +717,13 @@ class Agent:
         self.exp_lib.add(
             query=prompt,
             keywords="；".join(list(used_queries)),
-            summary=search_results[:500],
             prediction=current_prediction,
             evaluation=self.self_evaluate(current_prediction)
         )
         return current_prediction
 
 if __name__ == "__main__":
-    query = "2025年Q3上海徐汇滨江房价走势如何？"
+    query = "2025年Q1南京东路房价走势如何？"
     agent = Agent(Config())
     original_stdout = sys.stdout
     async def main():
@@ -611,7 +741,8 @@ if __name__ == "__main__":
     asyncio.run(main())
 
     # TODO:
-    # 4. 用之前的数据测试模型效果(比如xx年Qx出了一个大政策,房价改变很大,预测之后一段时间的走势来做验证)
-    # 5. 综合别的网站(搜狐?)
+    # 用之前的数据测试模型效果(比如xx年Qx出了一个大政策,房价改变很大,预测之后一段时间的走势来做验证)
+    # 大模型做网络搜索
+
 
 

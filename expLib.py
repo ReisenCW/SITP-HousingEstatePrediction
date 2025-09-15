@@ -19,12 +19,11 @@ class ExpLib:
         with open(self.db_path, "w", encoding="utf-8") as f:
             json.dump(self.experience_db, f, ensure_ascii=False, indent=2)
 
-    def add(self, query, keywords, summary, prediction, evaluation, timestamp=None):
+    def add(self, query, keywords, prediction, evaluation, timestamp=None):
         # timestamp: 预测时间（如2025-10-01），否则用当前时间
         record = {
             "query": query,
             "keywords": keywords,
-            "summary": summary,
             "prediction": prediction,
             "evaluation": evaluation,
             "timestamp": timestamp if timestamp else datetime.now().isoformat()
