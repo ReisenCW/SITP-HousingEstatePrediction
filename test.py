@@ -22,5 +22,4 @@ def test():
     print(response.choices[0].message.content)
 
 if __name__ == "__main__":
-    score = Evaluator.score("基本,持平","基本,持平")
-    print(score)
+    print(Config.DASHSCOPE_API_KEY)

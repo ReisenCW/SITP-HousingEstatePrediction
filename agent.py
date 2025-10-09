@@ -1,7 +1,8 @@
 import os
 from dashscope import Generation
 from config import Config
-
+import json
+from datetime import datetime
 
 class HousePriceAgent:
     def __init__(self, config: Config):
@@ -10,21 +11,45 @@ class HousePriceAgent:
         self.time_range = None  # 解析出的时间范围（如"2024年上半年"）
         self.search_history = []  # 搜索记录
         self.trajectory = []  # 记录轨迹
-        self.cot_file = "cot_trajectory.md"  # COT持久化文件
+        self.cot_file = "cot_trajectory.json"  # COT持久化文件
+        self.answer_path = config.ANSWER_PATH  # 最终答案存储路径
+
+    def save_answer(self, question: str, prediction: str, actual: str):
+        """保存最终答案到文件"""
+        answer = {
+            "question": question,
+            "prediction": prediction,
+            "actual": actual
+        }
+        with open(self.answer_path, "a", encoding="utf-8") as f:
+            json.dump(answer, f, ensure_ascii=False, indent=2)
 
     def record_trajectory(self, step: str, content: str, cot: str = None):
         """
         记录轨迹步骤：step为步骤名称（如解析、搜索、预测），content为具体内容，cot为思维链（可选）
-        COT内容会单独保存到cot_trajectory.md
+        COT内容以标准JSON数组格式保存到cot_trajectory.json
         """
         entry = f"[{step}] {content}"
         self.trajectory.append(entry)
         if cot:
-            cot_entry = f"[{step} COT] {cot}"
-            self.trajectory.append(cot_entry)
-            # 追加写入COT持久化文件
-            with open(self.cot_file, "a", encoding="utf-8") as f:
-                f.write(cot_entry + "\n")
+            cot_json = {
+                "step": step,
+                "content": content,
+                "cot": cot,
+                "timestamp": datetime.now().isoformat()
+            }
+            self.trajectory.append(f"[{step} COT] {cot}")
+            # 读出原有COT数组，追加新条目再写回
+            cots = []
+            if os.path.exists(self.cot_file):
+                try:
+                    with open(self.cot_file, "r", encoding="utf-8") as f:
+                        cots = json.load(f)
+                except Exception:
+                    cots = []
+            cots.append(cot_json)
+            with open(self.cot_file, "w", encoding="utf-8") as f:
+                json.dump(cots, f, ensure_ascii=False, indent=2)
 
     def load_persistent_memory(self) -> str:
         """读取历史反思记录作为持久记忆"""
@@ -34,11 +59,15 @@ class HousePriceAgent:
         return "无历史反思记录"
 
     def load_recent_cot(self, n=3) -> str:
-        """读取最近n条COT思维链"""
+        """读取最近n条COT思维链（标准JSON数组格式，返回字符串摘要）"""
         if os.path.exists(self.cot_file):
-            with open(self.cot_file, "r", encoding="utf-8") as f:
-                lines = [line.strip() for line in f if line.strip()]
-            return "\n".join(lines[-n:]) if lines else "无COT记录"
+            try:
+                with open(self.cot_file, "r", encoding="utf-8") as f:
+                    cots = json.load(f)
+                cots = cots[-n:] if len(cots) >= n else cots
+                return "\n".join([f"[{obj.get('step')}] {obj.get('cot')}" for obj in cots]) if cots else "无COT记录"
+            except Exception:
+                return "无COT记录"
         return "无COT记录"
 
     async def parse_query(self, query: str) -> tuple:
@@ -70,7 +99,6 @@ class HousePriceAgent:
 
         self.record_trajectory("解析问题", f"原始查询：{query}；提取区域：{region}，时间范围：{time_range}")
         return region, time_range
-
     async def search_related_info(self, region: str, time_range: str) -> str:
         """联网搜索影响房价的政策、新闻等信息，并记录COT"""
         prompt = f"""
@@ -83,27 +111,23 @@ class HousePriceAgent:
             enable_search=True,  # 启用联网搜索
             result_format="text"
         )
-        if response.status_code != 200:
-            raise RuntimeError(f"搜索信息失败：{response.message}")
-
         output = response.output.text.strip()
-        # 拆分消息和COT
-        if "COT:" in output:
-            info, cot = output.split("COT:", 1)
-            info = info.strip()
-            cot = cot.strip()
-        else:
-            info, cot = output, ""
-        self.search_history.append(f"搜索信息（{time_range}）：{info}")
-        self.record_trajectory(f"搜索", f"区域：{region}，时间范围：{time_range}；结果：{info}", cot)
-        return info
+        
+        self.search_history.append(f"搜索信息（{time_range}）：{output}")
+        return output
 
     async def predict_trend(self, region: str, time_range: str, info: str) -> str:
-        """基于搜索信息预测房价趋势（上升/下降/持平），并记录COT"""
+        """基于搜索信息预测房价趋势（上升/下降/持平）及幅度，记录COT"""
+        reflection_history = self.load_persistent_memory()
         prompt = f"""
-        综合权衡以下提供的所有利好与利空信息，客观预测{region}在{time_range}的房价趋势，只需输出：上升、下降或持平。
-        信息：{info}
-        输出格式：幅度,趋势, 如“大幅,上升”“小幅,下降”“基本,持平”
+        综合权衡以下提供的所有利好与利空信息，客观预测{region}在{time_range}的房价趋势及幅度。
+        幅度可以是具体值或范围（如"1%-3%"、"0.5%以内"），趋势为上升/下降/持平/先上升后下降。
+        信息：{info + "\n历史反思记录：" + reflection_history}
+        输出格式例如：
+        - 小幅上升,约1%左右
+        - 基本持平,0.5%以内
+        - 先小幅上升,1%左右,后大幅下降,约5%左右
+        不添加任何额外内容
         并请给出你的推理过程（COT），说明你如何权衡各因素得出结论。
         输出格式：预测结果\nCOT: ...
         """
@@ -123,10 +147,14 @@ class HousePriceAgent:
         return pred
 
     async def get_actual_trend(self, region: str, time_range: str) -> str:
-        """联网搜索实际房价趋势（上升/下降/持平）及幅度描述"""
+        """联网搜索实际房价趋势（上升/下降/持平）及幅度（支持范围）"""
         prompt = f"""
-        请联网查询{region}在{time_range}的实际房价趋势，
-        输出格式：幅度,趋势, 如“大幅,上升”“小幅,下降”“基本,持平”
+        请联网查询{region}在{time_range}的实际房价均价趋势及幅度。
+        幅度可以是具体值或范围（如"1%-3%"、"0.5%以内"），趋势为上升/下降/持平/先上升后下降。
+        输出格式例如：
+        - 小幅上升,约1%左右
+        - 基本持平,0.5%以内
+        - 先小幅上升,1%左右,后大幅下降,约5%左右
         不添加任何额外内容
         """
         response = Generation.call(
@@ -140,13 +168,8 @@ class HousePriceAgent:
     # 修改agent.py的generate_reflection方法
     async def generate_reflection(self, query: str, prediction: str,
                                 actual: str, score: int, info: str):
-        # 1. 定义稀疏奖励信号
-        res = "成功" if score == 80 else "有偏差" if score == 40 else "失败"
-        # 2. 获取当前轨迹（拼接为字符串）
         current_trajectory = "\n".join(self.trajectory)
-        # 3. 获取持久记忆（历史反思）
         persistent_memory = self.load_persistent_memory()
-        # 4. 获取最近3条COT
         recent_cot = self.load_recent_cot(3)
 
         # 2. 构建提示词，结构化输出
@@ -161,7 +184,7 @@ class HousePriceAgent:
         {persistent_memory}
         预测结果：{prediction}
         实际结果：{actual}
-        评分：{score}分（{res}）
+        评分：{score}分
         预测时使用的信息：{info}
 
         输出格式：
