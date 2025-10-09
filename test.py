@@ -1,28 +1,7 @@
-# import asyncio
-# from agent import Agent
-# from config import Config
-#
-# async def run_all():
-#     agent = Agent(Config())
-#     place = "上海黄浦区新天地"
-#     queries = [
-#         "2023年下半年" + place + "房价具体走势如何？",
-#         "2024年上半年" + place + "房价具体走势如何？",
-#         "2024年下半年" + place + "房价具体走势如何？",
-#         "2025年上半年" + place + "房价具体走势如何？"
-#     ]
-#     with open('answer.md', 'a', encoding='utf-8') as f:
-#         for q in queries:
-#             print(f"\n===== 预测: {q} =====")
-#             result = await agent.llm_with_iteration(q)
-#             f.write('\n' + '='*40 + f"\n* 预测: {q}\n* 结果:\n{result}\n")
-#             print(result)
-#
-# if __name__ == "__main__":
-#     asyncio.run(run_all())
 
 from openai import OpenAI
 from config import Config
+from evaluator import Evaluator
 
 
 def test():
@@ -30,7 +9,11 @@ def test():
         api_key=Config.DASHSCOPE_API_KEY,
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
     )
-    prompt = "2023Q2-Q3徐汇滨江房价变化情况是什么？上升/下降 + 百分比"
+    prompt = f"""
+                请联网查询黄浦区董家渡在2024上半年的实际房价趋势，输出格式：
+                趋势：[上升/下降/持平]
+                幅度描述：[如“大幅上升”“小幅下降”“基本持平”等]
+                """
     response = client.chat.completions.create(
         model="qwen-long",
         messages=[{"role": "user", "content": prompt}],
@@ -39,4 +22,5 @@ def test():
     print(response.choices[0].message.content)
 
 if __name__ == "__main__":
-    test()
+    score = Evaluator.score("基本,持平","基本,持平")
+    print(score)

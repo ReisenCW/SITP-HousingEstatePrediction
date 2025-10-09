@@ -5,8 +5,10 @@ class Config:
     DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")  # 阿里云DashScope API密钥
     MODEL = "qwen-plus"  # 使用的模型名称
     # 迭代与搜索配置
-    MAX_ITERATIONS = 3  # 预测时的最大搜索迭代次数
+    MAX_ITERATIONS = 1  # 预测时的最大搜索迭代次数
     SEARCH_TIMEOUT = 30  # 搜索超时时间（秒）
+    # 是否进化
+    ENABLE_EVOLUTION = True  # 是否启用进化
     # 日志与存储
     DEBUG = True  # 是否开启调试日志
     REFLECTION_HISTORY_PATH = "reflection_history.md"  # 反思记录路径
