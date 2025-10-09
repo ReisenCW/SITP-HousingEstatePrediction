@@ -3,8 +3,4 @@
 # ...existing code...
 
 # Ignore specific files
-answer.md
-housing_data.csv
-test.py
-local_search_db/
-experience_db.json
+test
