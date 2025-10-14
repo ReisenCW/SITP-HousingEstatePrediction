@@ -15,16 +15,26 @@ class HousePriceAgent:
         self.answer_path = config.ANSWER_PATH  # 最终答案存储路径
 
     def save_answer(self, question: str, prediction: str, actual: str):
-        """保存最终答案到文件"""
+        """追加保存最终答案到文件（answer.json为数组）"""
         answer = {
             "question": question,
             "prediction": prediction,
             "actual": actual
         }
-        with open(self.answer_path, "a", encoding="utf-8") as f:
-            json.dump(answer, f, ensure_ascii=False, indent=2)
+        answers = []
+        if os.path.exists(self.answer_path):
+            try:
+                with open(self.answer_path, "r", encoding="utf-8") as f:
+                    answers = json.load(f)
+                if not isinstance(answers, list):
+                    answers = [answers]
+            except Exception:
+                answers = []
+        answers.append(answer)
+        with open(self.answer_path, "w", encoding="utf-8") as f:
+            json.dump(answers, f, ensure_ascii=False, indent=2)
 
-    def record_trajectory(self, step: str, content: str, cot: str = None):
+    def record_trajectory(self, step: str, content: str, cot: str = ""):
         """
         记录轨迹步骤：step为步骤名称（如解析、搜索、预测），content为具体内容，cot为思维链（可选）
         COT内容以标准JSON数组格式保存到cot_trajectory.json
@@ -207,3 +217,4 @@ class HousePriceAgent:
             f.write(f"最近COT：{recent_cot}\n")
             f.write(f"反思：{reflection}\n")
         return reflection
+    

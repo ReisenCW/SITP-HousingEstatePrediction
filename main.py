@@ -18,7 +18,7 @@ async def main():
 
     agent = HousePriceAgent(config)
 
-    user_query = "2024年下半年黄浦董家渡房价走势如何"
+    user_query = "2025年上半年豫园房价走势如何"
     print("\n===== 开始处理 =====")
 
     def debug_log(msg):
