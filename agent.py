@@ -33,7 +33,7 @@ class HousePriceAgent:
             "question": question,
             "prediction": prediction,
             "actual": actual,
-            "score": score if score is not None else "null"
+            "score": score if score != -1 else "null"
         }
         answers = []
         if os.path.exists(self.answer_path):

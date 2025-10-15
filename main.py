@@ -99,7 +99,7 @@ async def main():
                 continue
             else:
                 # 未启用进化则只跑一次
-                agent.save_answer(user_query, prediction, "未获取实际趋势", None)
+                agent.save_answer(user_query, prediction, "未获取实际趋势", -1)
                 break
     except Exception as e:
         print(f"处理失败：{e}")
