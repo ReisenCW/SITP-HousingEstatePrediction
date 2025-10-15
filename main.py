@@ -79,26 +79,27 @@ async def main():
                     debug_log(f"[评估结果] 预测评分：{score}分")
 
                 # 6. 生成反思（若非满分）
-                if score < Config.SCORE_THRESHOLD:
-                    print("\n===== 反思分析 =====")
-                    reflection = await agent.generate_reflection(
-                        user_query, prediction, actual_result, score, combined_info
-                    )
-                    print(reflection)
-                    if config.DEBUG:
-                        debug_log(f"[反思]\n{reflection}")
-                    retries += 1
-                    if retries > config.MAX_RETRIES:
-                        print(f"已达最大重试次数({config.MAX_RETRIES})，流程终止。")
-                        break
-                    print(f"\n===== 重新预测（第{retries}次） =====")
-                    continue
-                else:
-                    agent.save_answer(user_query, prediction, actual_result)
+                print("\n===== 反思分析 =====")
+                reflection = await agent.generate_reflection(
+                    user_query, prediction, actual_result, score, combined_info
+                )
+                print(reflection)
+                if config.DEBUG:
+                    debug_log(f"[反思]\n{reflection}")
+                if score >= config.SCORE_THRESHOLD:
+                    agent.save_answer(user_query, prediction, actual_result, score)
                     break
+                # 分数低于阈值则重试
+                retries += 1
+                if retries > config.MAX_RETRIES:
+                    print(f"已达最大重试次数({config.MAX_RETRIES})，流程终止。")
+                    agent.save_answer(user_query, prediction, actual_result, score)
+                    break
+                print(f"\n===== 重新预测（第{retries}次） =====")
+                continue
             else:
                 # 未启用进化则只跑一次
-                agent.save_answer(user_query, prediction, "未获取实际趋势")
+                agent.save_answer(user_query, prediction, "未获取实际趋势", None)
                 break
     except Exception as e:
         print(f"处理失败：{e}")

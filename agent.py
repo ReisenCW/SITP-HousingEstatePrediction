@@ -27,12 +27,13 @@ class HousePriceAgent:
             "historical_reflection": "历史反思复用",
         }
 
-    def save_answer(self, question: str, prediction: str, actual: str):
+    def save_answer(self, question: str, prediction: str, actual: str, score: int):
         """追加保存最终答案到文件（answer.json为数组）"""
         answer = {
             "question": question,
             "prediction": prediction,
-            "actual": actual
+            "actual": actual,
+            "score": score if score is not None else "null"
         }
         answers = []
         if os.path.exists(self.answer_path):
