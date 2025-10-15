@@ -5,5 +5,6 @@
 # Ignore specific files
 test
 log.md
-cot_trajectory.json
 answer.json
+cot_trajectory.json
+reflections.json

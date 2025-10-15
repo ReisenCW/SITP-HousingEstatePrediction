@@ -47,7 +47,7 @@ class Evaluator:
                 
             # 计算幅度差异
             d = abs(pred_phase["magnitude"] - actual_phase["magnitude"])
-            phase_score = max(0, round(100 - 30 * d))
+            phase_score = max(0, round(100 - 25 * d))
             
             # 处理明显方向性矛盾
             if (pred_phase["trend"] == "持平" and actual_phase["trend"] in ["上升", "下降"] and 

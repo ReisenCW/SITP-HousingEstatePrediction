@@ -95,37 +95,24 @@ class HousePriceAgent:
             json.dump(cots, f, ensure_ascii=False, indent=2)
 
     def load_persistent_memory(self) -> str:
-        """读取历史反思记录作为持久记忆。
-
-        优先解析 JSONL（每行一个 JSON 对象）并返回最近若干条的摘要，供 prompt 使用；
-        若文件不是 JSONL，则返回原始文本（兼容旧格式）。
+        """
+            读取历史反思记录作为持久记忆。
+            按JSON格式解析
         """
         path = getattr(self.config, 'REFLECTION_HISTORY_PATH', 'reflection_history.json')
         if not os.path.exists(path):
             return "无历史反思记录"
 
-        # 尝试按 JSONL 解析，每行一个 JSON 对象
-        try:
-            summaries = []
-            with open(path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                        q = obj.get('query', '')
-                        s = obj.get('score', '')
-                        r = obj.get('reflection_text', '')
-                        summaries.append(f"问题：{q} | 分数：{s} | 反思：{r[:200]}")
-                    except Exception:
-                        # 发现非 JSON 行，退回到原始文本读取
-                        summaries = None
-                        break
-            if summaries is not None and summaries:
-                return "\n".join(summaries[-5:])
-        except Exception:
-            pass
+        # 按 JSON 解析
+        summaries = []
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            for obj in data:
+                q = obj.get('query', '')
+                s = obj.get('score', '')
+                r = obj.get('reflection_text', '')
+                summaries.append(f"问题：{q} | 分数：{s} | 反思：{r}")
+        return "\n".join(summaries[-5:]) if summaries else "无历史反思记录"
 
     def load_recent_cot(self, n=3) -> str:
         """读取最近n条COT记录（新格式），返回字符串摘要"""
@@ -419,6 +406,8 @@ class HousePriceAgent:
         entry = {
             "type": "success" if score >= Config.SCORE_THRESHOLD else "failure",
             "query": query,
+            "region": getattr(self, 'region', None),
+            "time_range": getattr(self, 'time_range', None),
             "prediction": prediction,
             "actual": actual,
             "score": score,
@@ -453,8 +442,14 @@ class HousePriceAgent:
                 reflections = json.load(f)
             if not isinstance(reflections, list):
                 return []
-            # 筛选相同query的记录，取最近3条
-            same_queries = [r for r in reflections if r.get('query') == query]
-            return same_queries[-3:]  # 只取最近3条避免信息过载
+
+            same_queries = []
+            for r in reflections:
+                if r.get('query') != query:
+                    continue
+                if getattr(self, 'region', None) and r.get('region') and r.get('region') != getattr(self, 'region'):
+                    continue
+                same_queries.append(r)
+            return same_queries[-3:]
         except Exception:
             return []
