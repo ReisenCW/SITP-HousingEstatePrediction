@@ -407,6 +407,7 @@ class HousePriceAgent:
             if self.current_cot is not None:
                 self.current_cot['accurate'] = 'false'
 
+        self._save_current_cot()
         response = Generation.call(
             model=self.config.MODEL,
             prompt=prompt,
