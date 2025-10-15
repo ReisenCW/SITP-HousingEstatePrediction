@@ -1,51 +1,18 @@
+from dashscope import Generation
+from prompts import PROMPTS
+
 class Evaluator:
-    LLM_SCORE_RULE = """
-    【评分规则】
-    1. 若预测趋势与实际趋势完全一致（如均为“上升”“下降”“持平”）→ 100分；
-    2. 一个为“持平”，另一个为“上升/下降”且幅度很小（如“0.5%以内”“1%-2%”“小幅”）→ 根据差距大小评分0-100分；
-    3. 其他情况（如上升和下降趋势相反、持平与大幅波动）→ 0分；
-    4. 实际结果为“未知”→ -1分（无法评分）。
-
-    【示例1】
-    用户查询：2024年上半年北京朝阳区房价走势
-    预测结果：1%-2%,上升
-    实际结果：0.8%-1.5%,上升
-    搜索信息：北京朝阳2024年1-6月新房供应增加，利率下调
-    推理轨迹：因供应增加+利率下调，预测小幅上升
-    评分：100
-    理由：预测趋势（上升）与实际趋势（上升）完全一致，符合评分规则1。
-
-    【示例2】
-    用户查询：2024年下半年上海静安区房价走势
-    预测结果：基本,持平
-    实际结果：0.3%-0.5%,下降
-    搜索信息：上海静安2024年7-12月二手房挂牌量微增，需求稳定
-    推理轨迹：因供需平衡，预测持平；实际小幅下降但幅度极小
-    评分：50
-    理由：预测为“持平”，实际为“下降”且幅度很小（0.3%-0.5%），符合评分规则2。
-
-    【示例3】
-    用户查询：2024年一季度深圳南山区房价走势
-    预测结果：3%-5%,上升
-    实际结果：2%-4%,下降
-    搜索信息：深圳南山2024年1-3月政策收紧，购房资格提升
-    推理轨迹：误判政策影响，预测上升；实际因政策收紧下降
-    评分：0
-    理由：预测趋势（上升）与实际趋势（下降）相反，符合评分规则3。
-    """
+    LLM_SCORE_RULE = PROMPTS["evaluator_llm_score_rule"]
     @staticmethod
     def score(prediction: str, actual_trend: str) -> int:
         """
         通过LLM判断预测与实际的匹配程度，输出分数（0-100）。
         """
-        from dashscope import Generation
-        prompt = f"""
-        请根据以下评分规则，对预测结果与实际结果进行评分，满分100分，输出数字分数。
-        {Evaluator.LLM_SCORE_RULE}
-        预测趋势：{prediction}
-        实际趋势：{actual_trend}
-        只输出分数数字，不要解释。
-        """
+        prompt = PROMPTS["evaluator_score"].format(
+            LLM_SCORE_RULE=Evaluator.LLM_SCORE_RULE,
+            prediction=prediction,
+            actual_trend=actual_trend
+        )
         response = Generation.call(
             model="qwen-plus",
             prompt=prompt,

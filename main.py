@@ -18,7 +18,7 @@ async def main():
 
     agent = HousePriceAgent(config)
 
-    user_query = "2025年上半年豫园房价走势如何"
+    user_query = "2024年下半年豫园房价走势如何"
     print("\n===== 开始处理 =====")
 
     def debug_log(msg):
@@ -35,6 +35,7 @@ async def main():
         while retries <= config.MAX_RETRIES:
             # 1. 解析问题（提取区域和时间范围）
             region, time_range = await agent.parse_query(user_query)
+
             print(f"解析结果：区域={region}，时间范围={time_range}")
             if config.DEBUG:
                 debug_log(f"[解析] 区域: {region}, 时间范围: {time_range}")
