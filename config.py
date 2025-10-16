@@ -15,7 +15,7 @@ class Config:
     DEBUG = True  # 是否开启调试日志
     REFLECTION_HISTORY_PATH = "reflection_history.json"  # 反思记录路径
     COT_TRAJECTORY_PATH = "cot_trajectory.json"  # COT轨迹记录路径
-    ANSWER_PATH = "answer.json"  # 最终答案存储路径
+    ANSWER_PATH = "./answer/"  # 最终答案存储路径
     # COT / reflection 控制选项：
     # 可选值 'ENABLE_COT', 'ENABLE_REFLECTION', 'ENABLE_BOTH', 'ENABLE_NONE'
     HISTORY_MODE = 'ENABLE_BOTH'

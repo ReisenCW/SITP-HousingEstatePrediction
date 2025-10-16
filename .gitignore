@@ -7,4 +7,6 @@ test
 log.md
 answer.json
 cot_trajectory.json
-reflections.json
+reflection_history.json
+
+./answer/*

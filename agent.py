@@ -36,16 +36,17 @@ class HousePriceAgent:
             "score": score if score != -1 else "null"
         }
         answers = []
-        if os.path.exists(self.answer_path):
+        filename = self.answer_path + f"{self.region.strip()}.json"
+        if os.path.exists(filename):
             try:
-                with open(self.answer_path, "r", encoding="utf-8") as f:
+                with open(filename, "r", encoding="utf-8") as f:
                     answers = json.load(f)
                 if not isinstance(answers, list):
                     answers = [answers]
             except Exception:
                 answers = []
         answers.append(answer)
-        with open(self.answer_path, "w", encoding="utf-8") as f:
+        with open(filename, "w", encoding="utf-8") as f:
             json.dump(answers, f, ensure_ascii=False, indent=2)
 
     def record_trajectory(self, step: str, content: str, cot: str = ""):
