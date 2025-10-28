@@ -12,14 +12,15 @@ class Evaluator:
     def parse_trend(content: str) -> list:
         """使用大模型解析趋势内容，提取阶段和幅度"""
         prompt = Evaluator.PARSE_TREND_PROMPT.format(content=content)
+        messages = [{"role": "user", "content": prompt}]
         try:
             response = Generation.call(
                 model=Config.MODEL,
-                prompt=prompt,
-                result_format="text"
-            )
+                messages=messages,
+                result_format="message"
+            ).output.choices[0].message.content
             # 提取JSON部分
-            json_str = re.search(r'\[.*]', response.output.text, re.DOTALL).group()
+            json_str = re.search(r'\[.*]', response, re.DOTALL).group()
             return json.loads(json_str)
         except Exception as e:
             print(f"解析趋势失败: {e}")

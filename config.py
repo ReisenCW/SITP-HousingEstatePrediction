@@ -3,7 +3,7 @@ import os
 class Config:
     # API配置
     DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")  # 阿里云DashScope API密钥
-    MODEL = "qwen-plus"  # 使用的模型名称
+    MODEL = "qwen3-max"  # 使用的模型名称
     # 迭代与搜索配置
     MAX_ITERATIONS = 1  # 预测时的最大搜索迭代次数
     MAX_RETRIES = 4  # 预测错误时的最大重试次数

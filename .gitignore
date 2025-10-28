@@ -5,7 +5,4 @@
 # Ignore specific files
 log.md
 *.json
-house_price.sql
-llmTest.py
-
 answer/
