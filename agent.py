@@ -78,7 +78,7 @@ class HousePriceAgent:
         """保存当前COT对象到文件"""
         if not self.current_cot:
             return
-        
+        # 读取已有的 COT 列表（如果存在），确保始终将当前 COT 追加
         cots = []
         if os.path.exists(self.cot_file):
             try:
@@ -88,32 +88,113 @@ class HousePriceAgent:
                     cots = []
             except Exception:
                 cots = []
-        
-            self.current_cot["timestamp"] = datetime.now().isoformat()
-            cots.append(self.current_cot)
-        
+
+        # 标注时间戳并追加当前 COT
+        self.current_cot["timestamp"] = datetime.now().isoformat()
+        cots.append(self.current_cot)
+
+        # 仅保留最近 5 条，防止文件过长
+        if len(cots) > 5:
+            cots = cots[-5:]
+
+        # 写回文件
         with open(self.cot_file, "w", encoding="utf-8") as f:
             json.dump(cots, f, ensure_ascii=False, indent=2)
 
-    def load_persistent_memory(self) -> str:
+    def extract_current_features(self, region: str, time_range: str, info: str = None) -> list:
+        """根据区域和时间范围，以及可选的info文本，抽取一组用于检索/归类的标签（tags）。
+
+        该方法使用启发式规则生成标签，目的是后续检索历史反思时进行快速相似度匹配。
+        返回tags为字符串列表，例如：['核心城区','限购政策','量价背离']
         """
-            读取历史反思记录作为持久记忆。
-            按JSON格式解析
+        tags = []
+        if not region:
+            return tags
+
+        r = region.lower()
+        # 区域类型检测（示例规则，可扩展）
+        core_indicators = ['徐汇', '静安', '黄浦', '虹口']
+        if any(kw.lower() in r for kw in core_indicators):
+            tags.append('核心城区')
+        else:
+            tags.append('非核心城区')
+
+        # 水域/滨江等地理特征
+        if any(x in region for x in ['滨江', '江', '码头']):
+            tags.append('滨江/沿河')
+
+        # 时间相关的政策敏感期检测
+        if any(x in time_range for x in ['下半年', '上半年', '今年', '明年']):
+            tags.append('短期预测')
+
+        # 从 info 中尝试抽取量价或政策关键词（若提供）
+        if info:
+            info_lower = info.lower()
+            if '限购' in info_lower or '限售' in info_lower or '调控' in info_lower:
+                tags.append('限购/调控')
+            if '成交量' in info_lower or '成交' in info_lower:
+                tags.append('成交量信号')
+            if '价格' in info_lower or '涨' in info_lower or '降' in info_lower:
+                tags.append('价格信号')
+
+        # 去重并返回
+        unique = []
+        for t in tags:
+            if t not in unique:
+                unique.append(t)
+        return unique
+
+    def load_persistent_memory(self, current_tags: list = None) -> str:
+        """
+            读取历史反思记录作为持久记忆，并支持基于 tags 的简单相似度检索。
+            如果传入 current_tags（字符串列表），优先返回与 tags 相似度高的历史反思（最多3条），并在末尾附加两条最新记录作为新鲜度缓冲。
         """
         path = getattr(self.config, 'REFLECTION_HISTORY_PATH', 'reflection_history.json')
         if not os.path.exists(path):
             return "无历史反思记录"
 
-        # 按 JSON 解析
-        summaries = []
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, list) or not data:
+                return "无历史反思记录"
+        except Exception:
+            return "无历史反思记录"
+
+        # 如果没有 tags，按原先逻辑返回最近若干条的文本摘要
+        if not current_tags:
+            summaries = []
             for obj in data:
                 q = obj.get('query', '')
                 s = obj.get('score', '')
                 r = obj.get('reflection_text', '')
                 summaries.append(f"问题：{q} | 分数：{s} | 反思：{r}")
-        return "\n".join(summaries[-5:]) if summaries else "无历史反思记录"
+            return "\n".join(summaries[-5:]) if summaries else "无历史反思记录"
+
+        # 否则进行简单的 Jaccard 相似度排序（tags交并比）
+        scored = []
+        ct_set = set([t.lower() for t in current_tags])
+        for obj in data:
+            tags = obj.get('tags', []) or []
+            if not tags:
+                continue
+            tags_set = set([t.lower() for t in tags])
+            inter = ct_set.intersection(tags_set)
+            union = ct_set.union(tags_set)
+            score = len(inter) / len(union) if union else 0.0
+            scored.append((score, obj))
+
+
+        recent = data[-5:]
+
+        summaries = []
+        for obj in recent:
+            q = obj.get('query', '')
+            s = obj.get('score', '')
+            r = obj.get('reflection_text', '')
+            tags = obj.get('tags', [])
+            summaries.append(f"问题：{q} | 标签：{tags} | 分数：{s} | 反思：{r}")
+        return "\n".join(summaries) if summaries else "无匹配的历史反思"
 
     def load_recent_cot(self, n=3) -> str:
         """读取最近n条COT记录（新格式），返回字符串摘要"""
@@ -200,7 +281,7 @@ class HousePriceAgent:
             region=region, 
             time_range=time_range
         )
-        adjust_prompt = f"请根据先前的反思结果{self.reflections}, 修改原先的搜索prompt, 调整搜索策略, 避免犯同样的错误。原prompt: {prompt}"
+        adjust_prompt = f"请根据先前的反思结果{self.reflections}, 修改原先用于向LLM联网搜索影响房价的政策、新闻等信息的prompt, 调整搜索策略, 避免犯同样的错误, 要求修改后的prompt简洁明了, 与原prompt结构类似, 用一段文字进行描述。原prompt: {prompt}"
         prompt = Generation.call(
             model=self.config.MODEL,
             prompt=adjust_prompt,
@@ -225,8 +306,10 @@ class HousePriceAgent:
         reflection_history = ""
         recent_cot = ""
         mode = getattr(self.config, 'HISTORY_MODE', 'ENABLE_BOTH')
+        # 先抽取当前特征标签，用于基于标签的反思检索
+        current_tags = self.extract_current_features(region, time_range, info)
         if mode in ('ENABLE_REFLECTION', 'ENABLE_BOTH'):
-            reflection_history = self.load_persistent_memory()
+            reflection_history = self.load_persistent_memory(current_tags)
         if mode in ('ENABLE_COT', 'ENABLE_BOTH'):
             recent_cot = self.load_recent_cot_block(3)
 
@@ -343,7 +426,9 @@ class HousePriceAgent:
     async def generate_reflection(self, query: str, prediction: str,
                                 actual: str, score: int, info: str):
         current_trajectory = "\n".join(self.trajectory)
-        persistent_memory = self.load_persistent_memory()
+        # 从当前上下文抽取标签并基于标签检索历史反思摘要
+        current_tags = self.extract_current_features(getattr(self, 'region', None), getattr(self, 'time_range', None), info)
+        persistent_memory = self.load_persistent_memory(current_tags)
         recent_cot = self.load_recent_cot(3)
 
         same_reflections = self.get_same_query_reflections(query)
@@ -409,6 +494,7 @@ class HousePriceAgent:
             "query": query,
             "region": getattr(self, 'region', None),
             "time_range": getattr(self, 'time_range', None),
+            "tags": current_tags,
             "prediction": prediction,
             "actual": actual,
             "score": score,

@@ -18,7 +18,7 @@ async def main():
 
     agent = HousePriceAgent(config)
 
-    user_query = "2024年下半年豫园房价走势如何"
+    user_query = "【徐汇区滨江】2025年上半年房价走势如何"
     print("\n===== 开始处理 =====")
 
     def debug_log(msg):
@@ -106,3 +106,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+# 1. 提供接口：预测xxx区域，先预测前半年的，反复至正确，再通过reflection的帮助预测之后的

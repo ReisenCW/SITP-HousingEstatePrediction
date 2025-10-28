@@ -3,10 +3,9 @@
 # ...existing code...
 
 # Ignore specific files
-test
 log.md
-answer.json
-cot_trajectory.json
-reflection_history.json
+*.json
+house_price.sql
+llmTest.py
 
-./answer/*
+answer/

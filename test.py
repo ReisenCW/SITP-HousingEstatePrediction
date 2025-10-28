@@ -18,8 +18,10 @@ async def main():
 
     agent = HousePriceAgent(config)
 
-    q_regions = ["豫园", "徐汇滨江", "董家渡", "新天地"]
+    # q_regions = ["豫园", "徐汇滨江", "五角场", "新天地"]
+    q_regions = ["五角场"]
     q_periods = [
+        "2023年下半年",
         "2024年上半年",
         "2024年下半年",
         "2025年上半年"
