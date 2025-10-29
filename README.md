@@ -7,6 +7,20 @@
 - 将 LLM 的推理与外部网络信息（新闻/政策）结合成可审计的思维链（COT），并用小型评估/反思闭环提高短期预测稳定性。
 - 支持可重复的本地运行流程：搜索 -> 预测 -> 获取实际 -> 评分 -> 反思 -> （重试） -> 最终预测。
 
+## 流程图
+* 主流程图:
+
+<div align="center">
+<img src="md_img/main_flowchart.png" alt="主流程图" width="450"/>
+</div>
+
+<br></br>
+
+* 预测子流程图:
+<div align="center">
+<img src="md_img/predict_flowchart.png" alt="预测流程图" width="300"/>
+</div>
+
 ## 环境构建
 
 ```shell
