@@ -118,7 +118,7 @@ def predict_region(region: str,
 
 if __name__ == "__main__":
     # 简单测试
-    region = "徐汇区滨江"
+    region = "杨浦区五角场"
     time_range = "2025年上半年"
     follow_up_time_range = "2025年下半年"
 
