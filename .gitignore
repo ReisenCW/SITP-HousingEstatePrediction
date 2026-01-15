@@ -6,3 +6,5 @@
 log.md
 *.json
 answer/
+.idea/
+__pycache__/
