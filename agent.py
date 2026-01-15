@@ -1,5 +1,5 @@
 import os
-from dashscope import Generation
+from llm_utils import call_llm
 from config import Config
 import json
 from prompts import PROMPTS
@@ -246,22 +246,6 @@ class HousePriceAgent:
                 return ""
         return ""
 
-    def _gen_text(self, **gen_kwargs) -> str:
-        """Safe wrapper around Generation.call that returns stripped text or empty string.
-
-        Returns an empty string if the call or the response.output.text is missing.
-        This avoids AttributeError when .output is None and centralizes simple logging.
-        """
-        try:
-            response = Generation.call(**gen_kwargs)
-        except Exception as e:
-            if getattr(self.config, 'DEBUG', False):
-                print(f"[agent] Generation.call raised exception: {e}")
-            return ""
-
-        return response.output.choices[0].message.content
-
-
     async def parse_query(self, query: str) -> tuple:
         """从用户问题中解析区域和时间范围"""
         # 初始化当前COT对象
@@ -273,11 +257,9 @@ class HousePriceAgent:
         }
         
         prompt = PROMPTS["parse_query"].format(query=query)
-        messages = [{"role": "user", "content": prompt}]
-        result = self._gen_text(
+        result = call_llm(
             model=self.config.MODEL, 
-            messages=messages, 
-            result_format="message"
+            prompt=prompt
         )
         if not result:
             raise RuntimeError("解析问题失败：模型未返回有效输出")
@@ -297,23 +279,19 @@ class HousePriceAgent:
 
         # 调整prmompt
         adjust_prompt = f"请根据先前的反思结果{self.reflections}, 修改原先用于向LLM联网搜索影响房价的政策、新闻等信息的prompt, 调整搜索策略, 避免犯同样的错误, 要求修改后的prompt简洁明了, 与原prompt结构类似, 用一段文字进行描述。原prompt: {prompt}"
-        messages = [{"role": "user", "content": adjust_prompt}]
-        adjusted = self._gen_text(
+        adjusted = call_llm(
             model=self.config.MODEL, 
-            messages=messages, 
-            enable_search=False, 
-            result_format="message"
+            prompt=adjust_prompt, 
+            search=False
         )
         
         # 如果无法从调整步骤获得新prompt，就使用原始prompt
         use_prompt = adjusted if adjusted else prompt
-        messages = [{"role": "user", "content": use_prompt}]
 
-        output = self._gen_text(
+        output = call_llm(
             model=self.config.MODEL, 
-            messages=messages, 
-            enable_search=True, 
-            result_format="message"
+            prompt=use_prompt, 
+            search=True
         )
         
         self.search_history.append(f"搜索信息（{time_range}）：{output}")
@@ -340,11 +318,9 @@ class HousePriceAgent:
             reflection_history=f"历史反思记录：\n{reflection_history}" if reflection_history else "",
             recent_cot=f"最近3条思维链（COT）记录：\n{recent_cot}" if recent_cot else ""
         )
-        messages = [{"role": "user", "content": prompt}]
-        output = self._gen_text(
+        output = call_llm(
             model=self.config.MODEL, 
-            messages=messages, 
-            result_format="message"
+            prompt=prompt
         )
 
         # 尝试解析结构化 COT 并做基本验证/归一化
@@ -434,12 +410,10 @@ class HousePriceAgent:
     async def get_actual_trend(self, region: str, time_range: str) -> str:
         """联网搜索实际房价趋势（上升/下降/持平）及幅度（支持范围）"""
         prompt = PROMPTS["get_actual_trend"].format(region=region, time_range=time_range)
-        messages = [{"role": "user", "content": prompt}]
-        return self._gen_text(
+        return call_llm(
             model=self.config.MODEL, 
-            messages=messages, 
-            enable_search=True, 
-            result_format="message"
+            prompt=prompt, 
+            search=True
         )
 
     # 修改agent.py的generate_reflection方法
@@ -502,11 +476,9 @@ class HousePriceAgent:
                 self.current_cot['accurate'] = 'false'
 
         self._save_current_cot()
-        messages = [{"role": "user", "content": prompt}]
-        reflection = self._gen_text(
+        reflection = call_llm(
             model=self.config.MODEL, 
-            messages=messages, 
-            result_format="message"
+            prompt=prompt
         )
 
         # 保存为 JSON，便于检索和分析

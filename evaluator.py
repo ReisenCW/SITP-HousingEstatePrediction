@@ -1,4 +1,4 @@
-from dashscope import Generation
+from llm_utils import call_llm
 from prompts import PROMPTS
 from config import Config
 import json
@@ -12,13 +12,11 @@ class Evaluator:
     def parse_trend(content: str) -> list:
         """使用大模型解析趋势内容，提取阶段和幅度"""
         prompt = Evaluator.PARSE_TREND_PROMPT.format(content=content)
-        messages = [{"role": "user", "content": prompt}]
         try:
-            response = Generation.call(
+            response = call_llm(
                 model=Config.MODEL,
-                messages=messages,
-                result_format="message"
-            ).output.choices[0].message.content
+                prompt=prompt
+            )
             # 提取JSON部分
             json_str = re.search(r'\[.*]', response, re.DOTALL).group()
             return json.loads(json_str)
