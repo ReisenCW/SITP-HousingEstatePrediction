@@ -2,6 +2,9 @@ from agents.base_agent import BaseAgent
 from prompts import PROMPTS, SYSTEM_PROMPTS
 
 class PredictorAgent(BaseAgent):
+    def __init__(self, config, model=None, think=True):
+        super().__init__(config, model=model or config.MODEL, think=think)
+    
     async def predict(self, region: str, time_range: str, info: str, 
                       reflection_history: str = "", recent_cot: str = "") -> str:
         prompt = PROMPTS["predict_trend"].format(

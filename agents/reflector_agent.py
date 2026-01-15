@@ -2,6 +2,9 @@ from agents.base_agent import BaseAgent
 from prompts import PROMPTS, SYSTEM_PROMPTS
 
 class ReflectorAgent(BaseAgent):
+    def __init__(self, config, model=None, think=True):
+        super().__init__(config, model=model or config.MODEL, think=think)
+
     async def reflect(self, query: str, prediction: str, actual: str, 
                       score: int, info: str, history_reminder: str,
                       current_trajectory: str, recent_cot: str, 

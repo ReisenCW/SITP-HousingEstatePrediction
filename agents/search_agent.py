@@ -2,6 +2,9 @@ from agents.base_agent import BaseAgent
 from prompts import PROMPTS, SYSTEM_PROMPTS
 
 class SearchAgent(BaseAgent):
+    def __init__(self, config, model=None):
+        super().__init__(config, model=model or config.WEB_MODEL)
+    
     async def search(self, region: str, time_range: str, reflections: str = "") -> str:
         prompt = PROMPTS["search_related_info"].format(
             region=region, 
