@@ -2,6 +2,9 @@ from agents.base_agent import BaseAgent
 from prompts import PROMPTS, SYSTEM_PROMPTS
 
 class QueryAgent(BaseAgent):
+    def __init__(self, config, model=None):
+        super().__init__(config, model=model or config.FAST_MODEL)
+
     async def parse(self, query: str) -> tuple:
         prompt = PROMPTS["parse_query"].format(query=query)
         result = self._call(prompt, system_prompt=SYSTEM_PROMPTS["query_parser"])

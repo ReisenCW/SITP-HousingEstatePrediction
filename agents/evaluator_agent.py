@@ -4,6 +4,9 @@ import re
 import json
 
 class EvaluatorAgent(BaseAgent):
+    def __init__(self, config, model=None):
+        super().__init__(config, model=model or config.FAST_MODEL)
+
     @staticmethod
     def calculate_score(prediction_phases: list, actual_phases: list) -> int:
         """根据解析出的阶段信息，用代码计算分数"""
