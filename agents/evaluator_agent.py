@@ -20,18 +20,22 @@ class EvaluatorAgent(BaseAgent):
             pred_phase = prediction_phases[i] if i < len(prediction_phases) else prediction_phases[-1]
             actual_phase = actual_phases[i] if i < len(actual_phases) else actual_phases[-1]
             
+            if (pred_phase["trend"] == "持平" and actual_phase["trend"] in ["上升", "下降"] and 
+                actual_phase["magnitude"] >= 0.5) or \
+               (actual_phase["trend"] == "持平" and pred_phase["trend"] in ["上升", "下降"] and 
+                pred_phase["magnitude"] >= 0.5):
+                # 如果一方预测持平但另一方有明显涨跌，扣除基本分
+                scores.append(max(0, round(50 - 25 * abs(pred_phase["magnitude"] - actual_phase["magnitude"]))))
+                continue
+
             if (pred_phase["trend"] in ["上升"] and actual_phase["trend"] in ["下降"]) or \
                (pred_phase["trend"] in ["下降"] and actual_phase["trend"] in ["上升"]):
                 scores.append(0)
                 continue
-                
+
+            # 正常打分逻辑：计算幅度差异
             d = abs(pred_phase["magnitude"] - actual_phase["magnitude"])
             phase_score = max(0, round(100 - 25 * d))
-            
-            if (pred_phase["trend"] == "持平" and actual_phase["trend"] in ["上升", "下降"] and 
-                actual_phase["magnitude"] > 3):
-                phase_score = max(0, phase_score - 10)
-                
             scores.append(phase_score)
             
         return round(sum(scores) / len(scores)) if scores else -1
@@ -41,7 +45,10 @@ class EvaluatorAgent(BaseAgent):
         prompt = PROMPTS["evaluator_parse_trend"].format(content=content)
         try:
             response = self._call(prompt, system_prompt=SYSTEM_PROMPTS["evaluator"])
-            json_str = re.search(r'\[.*]', response, re.DOTALL).group()
+            match = re.search(r'\[.*]', response, re.DOTALL)
+            if not match:
+                return []
+            json_str = match.group()
             return json.loads(json_str)
         except Exception as e:
             print(f"解析趋势失败: {e}")
