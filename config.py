@@ -14,6 +14,7 @@ class Config:
     # 日志与存储
     DEBUG = True  # 是否开启调试日志
     REFLECTION_HISTORY_PATH = "reflection_history.json"  # 反思记录路径
+    CHROMA_DB_PATH = "./chroma_db"  # ChromaDB 存储路径
     COT_TRAJECTORY_PATH = "cot_trajectory.json"  # COT轨迹记录路径
     ANSWER_PATH = "./answer/"  # 最终答案存储路径
     # COT / reflection 控制选项：

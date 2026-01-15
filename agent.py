@@ -2,9 +2,16 @@ import os
 from llm_utils import call_llm
 from config import Config
 import json
-from prompts import PROMPTS
+from prompts import PROMPTS, SYSTEM_PROMPTS
 from datetime import datetime
 import re
+
+from agents.query_agent import QueryAgent
+from agents.search_agent import SearchAgent
+from agents.predictor_agent import PredictorAgent
+from agents.reflector_agent import ReflectorAgent
+from agents.memory_agent import MemoryAgent
+from agents.evaluator_agent import EvaluatorAgent
 
 class HousePriceAgent:
     def __init__(self, config: Config):
@@ -17,7 +24,15 @@ class HousePriceAgent:
         self.cot_file = getattr(config, 'COT_TRAJECTORY_PATH', 'cot_trajectory.json')
         self.answer_path = config.ANSWER_PATH  # 最终答案存储路径
         self.current_cot = None
-        self.reflections = self.load_persistent_memory()
+        self.memory_agent = MemoryAgent(config)
+        self.reflections = "" # 动态加载
+
+        # 初始化子 Agent
+        self.query_agent = QueryAgent(config)
+        self.search_agent = SearchAgent(config)
+        self.predictor_agent = PredictorAgent(config)
+        self.reflector_agent = ReflectorAgent(config)
+        self.evaluator_agent = EvaluatorAgent(config)
 
         self.cot_field_mapping = {
             "policy": "政策分析",
@@ -146,55 +161,12 @@ class HousePriceAgent:
 
     def load_persistent_memory(self, current_tags: list = None) -> str:
         """
-            读取历史反思记录作为持久记忆，并支持基于 tags 的简单相似度检索。
-            如果传入 current_tags（字符串列表），优先返回与 tags 相似度高的历史反思（最多3条），并在末尾附加两条最新记录作为新鲜度缓冲。
+        利用 MemoryAgent 从向量数据库中检索相关的历史反思
         """
-        path = getattr(self.config, 'REFLECTION_HISTORY_PATH', 'reflection_history.json')
-        if not os.path.exists(path):
-            return "无历史反思记录"
+        # 可以结合当前区域和时间范围信息进行关联搜索
+        query_text = f"{self.region} {self.time_range}"
+        return self.memory_agent.search_reflections(query_text=query_text, tags=current_tags)
 
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            if not isinstance(data, list) or not data:
-                return "无历史反思记录"
-        except Exception:
-            return "无历史反思记录"
-
-        # 如果没有 tags，按原先逻辑返回最近若干条的文本摘要
-        if not current_tags:
-            summaries = []
-            for obj in data:
-                q = obj.get('query', '')
-                s = obj.get('score', '')
-                r = obj.get('reflection_text', '')
-                summaries.append(f"问题：{q} | 分数：{s} | 反思：{r}")
-            return "\n".join(summaries[-5:]) if summaries else "无历史反思记录"
-
-        # 否则进行简单的 Jaccard 相似度排序（tags交并比）
-        scored = []
-        ct_set = set([t.lower() for t in current_tags])
-        for obj in data:
-            tags = obj.get('tags', []) or []
-            if not tags:
-                continue
-            tags_set = set([t.lower() for t in tags])
-            inter = ct_set.intersection(tags_set)
-            union = ct_set.union(tags_set)
-            score = len(inter) / len(union) if union else 0.0
-            scored.append((score, obj))
-
-
-        recent = data[-5:]
-
-        summaries = []
-        for obj in recent:
-            q = obj.get('query', '')
-            s = obj.get('score', '')
-            r = obj.get('reflection_text', '')
-            tags = obj.get('tags', [])
-            summaries.append(f"问题：{q} | 标签：{tags} | 分数：{s} | 反思：{r}")
-        return "\n".join(summaries) if summaries else "无匹配的历史反思"
 
     def load_recent_cot(self, n=3) -> str:
         """读取最近n条COT记录（新格式），返回字符串摘要"""
@@ -256,15 +228,7 @@ class HousePriceAgent:
             "accurate": "unknown"
         }
         
-        prompt = PROMPTS["parse_query"].format(query=query)
-        result = call_llm(
-            model=self.config.MODEL, 
-            prompt=prompt
-        )
-        if not result:
-            raise RuntimeError("解析问题失败：模型未返回有效输出")
-        region = [line.split("：")[1] for line in result.split("\n") if "区域：" in line][0]
-        time_range = [line.split("：")[1] for line in result.split("\n") if "时间范围：" in line][0]
+        region, time_range = await self.query_agent.parse(query)
         self.region = region
         self.time_range = time_range
 
@@ -272,28 +236,7 @@ class HousePriceAgent:
     
     async def search_related_info(self, region: str, time_range: str) -> str:
         """联网搜索影响房价的政策、新闻等信息，并记录COT"""
-        prompt = PROMPTS["search_related_info"].format(
-            region=region, 
-            time_range=time_range
-        )
-
-        # 调整prmompt
-        adjust_prompt = f"请根据先前的反思结果{self.reflections}, 修改原先用于向LLM联网搜索影响房价的政策、新闻等信息的prompt, 调整搜索策略, 避免犯同样的错误, 要求修改后的prompt简洁明了, 与原prompt结构类似, 用一段文字进行描述。原prompt: {prompt}"
-        adjusted = call_llm(
-            model=self.config.MODEL, 
-            prompt=adjust_prompt, 
-            search=False
-        )
-        
-        # 如果无法从调整步骤获得新prompt，就使用原始prompt
-        use_prompt = adjusted if adjusted else prompt
-
-        output = call_llm(
-            model=self.config.MODEL, 
-            prompt=use_prompt, 
-            search=True
-        )
-        
+        output = await self.search_agent.search(region, time_range, self.reflections)
         self.search_history.append(f"搜索信息（{time_range}）：{output}")
         return output
 
@@ -310,17 +253,8 @@ class HousePriceAgent:
         if mode in ('ENABLE_COT', 'ENABLE_BOTH'):
             recent_cot = self.load_recent_cot_block(3)
 
-        # 强制结构化 COT 模板，避免跳跃性推理并要求量化锚定
-        prompt = PROMPTS["predict_trend"].format(
-            region=region,
-            time_range=time_range,
-            info=info,
-            reflection_history=f"历史反思记录：\n{reflection_history}" if reflection_history else "",
-            recent_cot=f"最近3条思维链（COT）记录：\n{recent_cot}" if recent_cot else ""
-        )
-        output = call_llm(
-            model=self.config.MODEL, 
-            prompt=prompt
+        output = await self.predictor_agent.predict(
+            region, time_range, info, reflection_history, recent_cot
         )
 
         # 尝试解析结构化 COT 并做基本验证/归一化
@@ -409,12 +343,7 @@ class HousePriceAgent:
 
     async def get_actual_trend(self, region: str, time_range: str) -> str:
         """联网搜索实际房价趋势（上升/下降/持平）及幅度（支持范围）"""
-        prompt = PROMPTS["get_actual_trend"].format(region=region, time_range=time_range)
-        return call_llm(
-            model=self.config.MODEL, 
-            prompt=prompt, 
-            search=True
-        )
+        return await self.search_agent.get_actual(region, time_range)
 
     # 修改agent.py的generate_reflection方法
     async def generate_reflection(self, query: str, prediction: str,
@@ -446,39 +375,18 @@ class HousePriceAgent:
             )
 
         if score >= Config.SCORE_THRESHOLD:
-            prompt = PROMPTS["generate_reflection_success"].format(
-                score=score,
-                history_reminder=history_reminder,
-                query=query,
-                current_trajectory=current_trajectory,
-                recent_cot=recent_cot,
-                persistent_memory=persistent_memory,
-                prediction=prediction,
-                actual=actual,
-                info=info
-            )
             # current COT 的 accurate 字段设置为 true
             if self.current_cot is not None:
                 self.current_cot['accurate'] = 'true'
         else:
-            prompt = PROMPTS["generate_reflection_failure"].format(
-                score=score,
-                history_reminder=history_reminder,
-                query=query,
-                current_trajectory=current_trajectory,
-                recent_cot=recent_cot,
-                persistent_memory=persistent_memory,
-                prediction=prediction,
-                actual=actual,
-                info=info
-            )
             if self.current_cot is not None:
                 self.current_cot['accurate'] = 'false'
 
         self._save_current_cot()
-        reflection = call_llm(
-            model=self.config.MODEL, 
-            prompt=prompt
+        
+        reflection = await self.reflector_agent.reflect(
+            query, prediction, actual, score, info, history_reminder,
+            current_trajectory, recent_cot, persistent_memory
         )
 
         # 保存为 JSON，便于检索和分析
@@ -509,9 +417,29 @@ class HousePriceAgent:
         reflections.append(entry)
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(reflections, f, ensure_ascii=False, indent=2)
+            
+        # 同时保存到向量数据库
+        self.memory_agent.add_reflection(entry)
+        
         return reflection
 
-    # 检索相同问题的历史反思
+    async def check_experience(self, region: str) -> bool:
+        """检查向量数据库中是否有该区域或相关经验"""
+        return self.memory_agent.has_experience(region)
+
+    async def get_relevant_reflections(self, region: str) -> str:
+        """获取相关的历史反思记录（从向量数据库）"""
+        return self.memory_agent.search_reflections(query_text=region, n_results=3)
+
+    async def predict(self, region: str, time_range: str, reflections: str = "") -> tuple:
+        """核心预测逻辑：搜索信息 -> 解析反思 -> 生成预测内容。"""
+        if reflections:
+             self.reflections = reflections
+        
+        search_info = await self.search_related_info(region, time_range)
+        prediction_trend = await self.predict_trend(region, time_range, search_info)
+        return prediction_trend, search_info
+
     def get_same_query_reflections(self, query: str) -> list:
         """获取历史中与当前问题相同的反思记录"""
         path = getattr(self.config, 'REFLECTION_HISTORY_PATH', 'reflection_history.json')
