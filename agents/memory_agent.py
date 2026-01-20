@@ -3,6 +3,7 @@ from chromadb.config import Settings
 import os
 import json
 import uuid
+import time
 from typing import List, Dict, Any
 
 class MemoryAgent:
@@ -23,6 +24,7 @@ class MemoryAgent:
         """
         将反思记录添加到向量数据库
         """
+        start_time = time.time()
         # 准备元数据和文本内容
         # 因为 Chroma 元数据不支持 list，所以将 tags 转为逗号分隔的字符串
         metadata = {
@@ -46,11 +48,15 @@ class MemoryAgent:
             metadatas=[metadata],
             ids=[doc_id]
         )
+        duration = time.time() - start_time
+        if getattr(self.config, 'DEBUG', False):
+            print(f"[MemoryAgent] 添加反思耗时: {duration:.2f}秒")
 
     def search_reflections(self, query_text: str = None, tags: List[str] = None, n_results: int = 3) -> str:
         """
         基于语义和标签搜索相关的反思记录
         """
+        start_time = time.time()
         # 简单的检索逻辑：如果有 query_text（通常是当前任务描述或特征描述），做向量搜索
         # 如果有 tags，可以作为过滤条件（Chroma 支持 where 过滤，但这里先主要用语义搜索）
         
@@ -74,6 +80,9 @@ class MemoryAgent:
                     f"[来源区域: {meta['region']}] [评分: {meta['score']}] [标签: {meta['tags']}]\n反思内容: {doc}"
                 )
         
+        duration = time.time() - start_time
+        if getattr(self.config, 'DEBUG', False):
+            print(f"[MemoryAgent] 搜索反思耗时: {duration:.2f}秒")
         return "\n---\n".join(summaries) if summaries else "无匹配的历史反思"
 
     def has_experience(self, region: str) -> bool:
