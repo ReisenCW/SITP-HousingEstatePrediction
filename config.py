@@ -19,11 +19,10 @@ class Config:
     DEBUG = True  # 是否开启调试日志
     REFLECTION_HISTORY_PATH = "reflection_history.json"  # 反思记录路径
     CHROMA_DB_PATH = "./chroma_db"  # ChromaDB 存储路径
-    COT_TRAJECTORY_PATH = "cot_trajectory.json"  # COT轨迹记录路径
     ANSWER_PATH = "./answer/"  # 最终答案存储路径
-    # COT / reflection 控制选项：
-    # 可选值 'ENABLE_COT', 'ENABLE_REFLECTION', 'ENABLE_BOTH', 'ENABLE_NONE'
-    HISTORY_MODE = 'ENABLE_BOTH'
+    # reflection 控制选项：
+    # 可选值 'ENABLE_REFLECTION', 'ENABLE_NONE'
+    HISTORY_MODE = 'ENABLE_REFLECTION'
 
     @classmethod
     def validate(cls):
@@ -31,6 +30,6 @@ class Config:
         if not cls.DASHSCOPE_API_KEY:
             raise ValueError("请设置环境变量DASHSCOPE_API_KEY（从阿里云DashScope获取）")
         # 验证 HISTORY_MODE
-        allowed = {'ENABLE_COT', 'ENABLE_REFLECTION', 'ENABLE_BOTH', 'ENABLE_NONE'}
+        allowed = {'ENABLE_REFLECTION', 'ENABLE_BOTH', 'ENABLE_NONE'}
         if getattr(cls, 'HISTORY_MODE', None) not in allowed:
             raise ValueError(f"无效的 HISTORY_MODE 配置: {cls.HISTORY_MODE}，应为 {allowed}")

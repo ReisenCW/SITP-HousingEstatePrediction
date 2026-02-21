@@ -1,3 +1,4 @@
+import re
 from agents.base_agent import BaseAgent
 from prompts import PROMPTS, SYSTEM_PROMPTS
 
@@ -13,9 +14,16 @@ class QueryAgent(BaseAgent):
             raise RuntimeError("解析问题失败：模型未返回有效输出")
         
         try:
-            # 提取“：”后的文字，并移除两端的空白字符，再移除两端可能的方括号及其内部/外部空白
-            region = [line.split("：")[1].strip().strip("[]").strip() for line in result.split("\n") if "区域：" in line][0]
-            time_range = [line.split("：")[1].strip().strip("[]").strip() for line in result.split("\n") if "时间范围：" in line][0]
+            # 使用正则表达式提取，支持全角和半角冒号，并忽略前后空白
+            region_match = re.search(r"区域[:：]\s*(.*)", result)
+            time_match = re.search(r"时间范围[:：]\s*(.*)", result)
+            
+            if not region_match or not time_match:
+                raise IndexError("未能匹配区域或时间范围")
+                
+            region = region_match.group(1).strip().strip("[]").strip()
+            time_range = time_match.group(1).strip().strip("[]").strip()
+            
             return region, time_range
         except (IndexError, AttributeError):
             raise RuntimeError(f"解析结果格式不符合预期: {result}")

@@ -33,11 +33,11 @@ pip install -r requirements.txt
 
 ## 主要模块与文件
 - `api.py` — 提供完整工作流接口（搜索 -> 预测 -> 获取实际 -> 评分 -> 反思，支持演化循环与后续时间段预测）。
-- `agent.py` — `HousePriceAgent`：封装与 LLM 的交互、COT、轨迹与持久化反思。 
+- `agent.py` — `HousePriceAgent`：封装与 LLM 的交互与持久化反思。 
 - `evaluator.py` — 用于解析 LLM 输出的趋势并计算预测分数。
 - `prompts.py` — 所有 LLM prompt 模板。
 - `config.py` — 配置与阈值（API KEY、模型名、是否启用演化等）。
-- `reflection_history.json`, `cot_trajectory.json`, `answer/` — 持久化反思、COT 轨迹与最终答案目录。
+- `reflection_history.json`,  `answer/` — 持久化反思，最终答案目录。
 
 
 ## 配置说明

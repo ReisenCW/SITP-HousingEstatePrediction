@@ -9,3 +9,4 @@ answer/
 .idea/
 __pycache__/
 chroma_db/
+.venv/

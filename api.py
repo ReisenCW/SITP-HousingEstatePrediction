@@ -34,11 +34,8 @@ async def perform_evolution_cycle(agent: HousePriceAgent,
     last_pred = "预测失败"
     
     while retries <= max_retries:
-        # 获取最相似的记忆（反思）
-        reflections = await agent.get_relevant_reflections(region)
-        
         # 预测
-        pred, info = await agent.predict(region, time_range, reflections)
+        pred, info = await agent.predict(region, time_range)
         last_pred = pred
         
         if debug:

@@ -7,7 +7,7 @@ class ReflectorAgent(BaseAgent):
 
     async def reflect(self, query: str, prediction: str, actual: str, 
                       score: int, info: str, history_reminder: str,
-                      current_trajectory: str, recent_cot: str, 
+                      current_trajectory: str, 
                       persistent_memory: str) -> str:
         
         prompt_key = "generate_reflection_success" if score >= self.config.SCORE_THRESHOLD else "generate_reflection_failure"
@@ -17,7 +17,6 @@ class ReflectorAgent(BaseAgent):
             history_reminder=history_reminder,
             query=query,
             current_trajectory=current_trajectory,
-            recent_cot=recent_cot,
             persistent_memory=persistent_memory,
             prediction=prediction,
             actual=actual,
