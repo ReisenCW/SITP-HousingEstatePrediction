@@ -5,8 +5,8 @@ class Config:
     DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")  # 阿里云DashScope API密钥
     # 使用的模型
     # MODEL = "qwen3-max"
-    MODEL = "glm-4.7"
-    WEB_MODEL = "qwen3-max"
+    MODEL = "qwen3-max"
+    WEB_MODEL = "qwen3-plus"
     FAST_MODEL = "qwen-flash"
     # 迭代与搜索配置
     MAX_ITERATIONS = 1  # 预测时的最大搜索迭代次数

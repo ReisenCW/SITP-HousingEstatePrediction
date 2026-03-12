@@ -230,6 +230,8 @@ class HousePriceAgent:
 
     async def predict(self, region: str, time_range: str) -> tuple:
         """核心预测逻辑：搜索信息 -> 解析反思 -> 生成预测内容。"""
+        self.region = region
+        self.time_range = time_range
         search_info = await self.search_related_info(region, time_range)
         prediction_trend = await self.predict_trend(region, time_range, search_info)
         return prediction_trend, search_info
